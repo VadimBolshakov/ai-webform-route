@@ -221,3 +221,26 @@ async def test_add_model_openrouter_errors_no_500(client, db, responder):
         r = await post(client, "/models", csrf, model_id="vendor/x")
     assert r.status_code == 502 and "OpenRouter недоступен" in r.text
     assert (await db.execute(select(AllowedModel))).first() is None
+
+
+async def test_admin_audit_has_no_deleted_user_name(client, db):
+    from app.account.service import delete_account
+    from tests.fakes import FakeNotifier
+    from tests.test_auth import PASSWORD
+
+    admin, csrf = await admin_in(client, db)
+    bob = await make_user(db, "bob")
+    await post(client, f"/users/{bob.id}/limit", csrf, limit="7")
+    await post(client, f"/users/{bob.id}/block", csrf)
+    await post(client, f"/users/{bob.id}/unblock", csrf)
+    await delete_account(db, bob, PASSWORD, ip="1.1.1.1", notifier=FakeNotifier())
+    rows = (await db.execute(select(AuditLog))).scalars().all()
+    assert any(r.event == "user_blocked" for r in rows)
+    assert not any("bob" in f"{r.user_label}{r.details}" for r in rows)
+
+
+async def test_oversized_limit_and_model_id_give_400(client, db):
+    _, csrf = await admin_in(client, db)
+    bob = await make_user(db, "bob")
+    assert (await post(client, f"/users/{bob.id}/limit", csrf, limit="1" * 100)).status_code == 400
+    assert (await post(client, "/models", csrf, model_id="a/" + "b" * 500)).status_code == 400

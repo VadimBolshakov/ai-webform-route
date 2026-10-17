@@ -45,10 +45,11 @@ async def backfill_costs(factory, llm, notifier) -> int:
     updated = 0
     last_id = 0
     while True:
+        # Короткая сессия на чтение: транзакция не висит на время HTTP-запросов.
         async with factory() as db:
-            rows = (
+            cands = (
                 await db.execute(
-                    select(Usage)
+                    select(Usage.id, Usage.generation_id, Usage.user_id)
                     .where(
                         Usage.cost_usd.is_(None),
                         Usage.generation_id.is_not(None),
@@ -58,36 +59,39 @@ async def backfill_costs(factory, llm, notifier) -> int:
                     .order_by(Usage.id)
                     .limit(BACKFILL_BATCH)
                 )
-            ).scalars().all()
-            if not rows:
-                return updated
-            last_id = rows[-1].id
+            ).all()
+            await db.rollback()
+        if not cands:
+            return updated
+        last_id = cands[-1].id
 
-            costs: dict[int, Decimal] = {}
-            for row in rows:
-                try:
-                    cost = await llm.get_generation_cost(row.generation_id)
-                except Exception as exc:  # одна плохая запись не должна рушить пачку
-                    logger.warning("backfill_costs: lookup failed (%s)", type(exc).__name__)
-                    continue
-                if cost is not None:
-                    costs[row.id] = cost
-            if not costs:
+        costs: dict[int, Decimal] = {}
+        for row in cands:
+            try:
+                cost = await llm.get_generation_cost(row.generation_id)
+            except Exception as exc:  # одна плохая запись не должна рушить пачку
+                logger.warning("backfill_costs: lookup failed (%s)", type(exc).__name__)
                 continue
+            if cost is not None:
+                costs[row.id] = cost
+        if not costs:
+            continue
 
-            user_ids = {r.user_id for r in rows if r.id in costs and r.user_id is not None}
+        async with factory() as db:
+            user_ids = {r.user_id for r in cands if r.id in costs and r.user_id is not None}
             before = {uid: await month_spend(db, uid) for uid in user_ids}
-            for row in rows:
-                if row.id in costs:
-                    row.cost_usd = costs[row.id]
+            res = await db.execute(select(Usage).where(Usage.id.in_(costs), Usage.cost_usd.is_(None)))
+            changed = 0
+            for row in res.scalars():
+                row.cost_usd = costs[row.id]
+                changed += 1
             await db.flush()
             for uid in user_ids:
                 user = await db.get(User, uid)
                 if user is not None:
-                    after = await month_spend(db, uid)
-                    await notify_thresholds(db, notifier, user, before[uid], after)
+                    await notify_thresholds(db, notifier, user, before[uid], await month_spend(db, uid))
             await db.commit()
-            updated += len(costs)
+            updated += changed
 
 
 def make_scheduler(app) -> AsyncIOScheduler:

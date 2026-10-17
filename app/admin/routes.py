@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_LIMIT = Decimal("1000")
 MAX_DECIMALS = 4
+MAX_LIMIT_INPUT = 64
 MODEL_ID_RE = re.compile(r"^[a-z0-9._-]+/[a-z0-9._:-]+$")
 MAX_MODEL_ID = 200
 INVITES_SHOWN = 50
@@ -48,6 +49,8 @@ router = APIRouter(prefix="/app/admin")
 
 
 def parse_limit(raw: str) -> Decimal | None:
+    if len(raw) > MAX_LIMIT_INPUT:
+        return None
     try:
         value = Decimal(raw.strip())
     except (InvalidOperation, ValueError):
@@ -198,7 +201,7 @@ async def _locked_user(db: AsyncSession, user_id: int) -> User:
 async def set_limit(
     user_id: int,
     request: Request,
-    limit: str = Form("", max_length=64),
+    limit: str = Form(""),
     ctx: AuthContext = Depends(admin_auth),
     db: AsyncSession = Depends(get_db),
 ):
@@ -211,7 +214,7 @@ async def set_limit(
     user.monthly_limit_usd = value
     await audit(
         db, "limit_changed", ctx.user, client_ip(request),
-        target=user.username, old=str(old), new=str(value),
+        target_id=user.id, old=str(old), new=str(value),
     )
     await db.commit()
     return _back()
@@ -232,7 +235,7 @@ async def block_user(
         return await _page(request, db, ctx, status=400, error=MSG_ADMIN_BLOCK)
     user.is_active = False
     await revoke_all(db, user.id)
-    await audit(db, "user_blocked", ctx.user, client_ip(request), target=user.username)
+    await audit(db, "user_blocked", ctx.user, client_ip(request), target_id=user.id)
     await db.commit()
     return _back()
 
@@ -247,7 +250,7 @@ async def unblock_user(
     await require_csrf(request, ctx.session)
     user = await _locked_user(db, user_id)
     user.is_active = True
-    await audit(db, "user_unblocked", ctx.user, client_ip(request), target=user.username)
+    await audit(db, "user_unblocked", ctx.user, client_ip(request), target_id=user.id)
     await db.commit()
     return _back()
 
@@ -255,7 +258,7 @@ async def unblock_user(
 @router.post("/models")
 async def add_model(
     request: Request,
-    model_id: str = Form("", max_length=400),
+    model_id: str = Form(""),
     ctx: AuthContext = Depends(admin_auth),
     db: AsyncSession = Depends(get_db),
 ):
