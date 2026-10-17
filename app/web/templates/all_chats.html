@@ -1,0 +1,30 @@
+{% extends "chat.html" %}
+{% from "_chat_list.html" import chat_actions %}
+{% block title %}Все чаты{% endblock %}
+{% block main %}
+<section class="all-chats">
+  <h1>Все чаты</h1>
+  <form class="search" method="get" action="/app/chats/all" role="search">
+    <input type="search" name="q" value="{{ q }}" maxlength="200" placeholder="Поиск по заголовкам" aria-label="Поиск по заголовкам">
+    <button type="submit">Найти</button>
+  </form>
+  <ul class="results">
+    {% for c in results %}
+    <li class="result">
+      <a class="result-link" href="/app/chats/{{ c.id }}">{{ c.title }}</a>
+      {% if c.pinned %}<span class="pin-mark" title="Закреплён">📌</span>{% endif %}
+      <time datetime="{{ c.updated_at.isoformat() }}">{{ c.updated_at.strftime("%d.%m.%Y") }}</time>
+      {{ chat_actions(c) }}
+    </li>
+    {% else %}
+    <li class="empty-hint">{% if q %}Ничего не найдено{% else %}Чатов пока нет{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% if prev_url or next_url %}
+  <nav class="pager" aria-label="Страницы">
+    {% if prev_url %}<a href="{{ prev_url }}">← Назад</a>{% endif %}
+    {% if next_url %}<a href="{{ next_url }}">Дальше →</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,27 @@
+{#- Боковая панель: список чатов. Возвращается целиком после rename/pin/delete (HTMX outerHTML). -#}
+{% macro chat_actions(c) -%}
+<details class="chat-actions">
+  <summary title="Действия с чатом" aria-label="Действия с чатом">⋯</summary>
+  <div class="menu">
+    <form class="rename" hx-post="/app/chats/{{ c.id }}/rename">
+      <input type="text" name="title" value="{{ c.title }}" maxlength="200" required aria-label="Новое название">
+      <button type="submit">Переименовать</button>
+    </form>
+    <button type="button" hx-post="/app/chats/{{ c.id }}/pin">{% if c.pinned %}Открепить{% else %}Закрепить{% endif %}</button>
+    <button type="button" class="danger" hx-post="/app/chats/{{ c.id }}/delete" hx-confirm="Удалить чат «{{ c.title }}»?">Удалить</button>
+  </div>
+</details>
+{%- endmacro %}
+<nav id="chat-list" class="chat-list" aria-label="Последние чаты" hx-target="this" hx-swap="outerHTML">
+  <ul>
+    {% for c in chats %}
+    <li class="chat-item{% if c.id == current_id %} current{% endif %}" data-chat-id="{{ c.id }}">
+      <a class="chat-link" href="/app/chats/{{ c.id }}"{% if c.id == current_id %} aria-current="page"{% endif %}>{{ c.title }}</a>
+      {% if c.pinned %}<span class="pin-mark" title="Закреплён">📌</span>{% endif %}
+      {{ chat_actions(c) }}
+    </li>
+    {% else %}
+    <li class="chat-empty">Чатов пока нет</li>
+    {% endfor %}
+  </ul>
+</nav>

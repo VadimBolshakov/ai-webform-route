@@ -1,0 +1,16 @@
+{#- Одно сообщение истории. Текст лежит в <template class="md"> (Jinja экранирует его);
+    chat.js берёт textContent и рисует: ответы — Markdown через DOMPurify, вопросы — как текст. -#}
+<div class="msg" data-role="{{ m.role }}" data-msg-id="{{ m.id }}">
+  {% if m.attachments %}
+  <ul class="chips">{% for a in m.attachments %}<li class="chip">{{ a.name }}</li>{% endfor %}</ul>
+  {% endif %}
+  <template class="md">{{ m.content }}</template>
+  <div class="body"></div>
+  {% if m.role == "assistant" %}
+  <div class="meta">
+    <span class="meta-info">{{ m.model or "" }}{% if m.interrupted %} · прервано{% endif %}</span>
+    <button type="button" class="save" data-ext="md" title="Сохранить ответ в .md">💾 .md</button>
+    <button type="button" class="save" data-ext="txt" title="Сохранить ответ в .txt">💾 .txt</button>
+  </div>
+  {% endif %}
+</div>

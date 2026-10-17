@@ -3,11 +3,13 @@
 Starlette's parser spools uploads >1 MB to a temp file; attachments must never touch the
 disk, so the request body is parsed here into bytes. Memory is bounded: per-part header
 size/count, per-file and per-field size, file count (excess parts are dropped as soon as
-their headers arrive) and a total body cap counted on the raw stream.
+their headers arrive) and a total body cap counted on the raw stream. Small urlencoded
+bodies (chat rename) are read the same way, with a byte cap.
 """
 
 import re
 from dataclasses import dataclass, field
+from urllib.parse import parse_qsl
 
 from fastapi import Request
 from python_multipart.multipart import MultipartParser, parse_options_header
@@ -217,3 +219,25 @@ async def parse_form(request: Request, *, max_file_bytes: int, max_files: int) -
     except Exception as exc:
         raise MalformedForm(type(exc).__name__) from exc
     return form
+
+
+async def parse_urlencoded(request: Request, *, max_bytes: int) -> dict[str, str]:
+    """Small application/x-www-form-urlencoded body → {name: first value}, read with a cap.
+
+    Raises UnsupportedForm (other content type), BodyTooLarge.
+    """
+    content_type, _ = parse_options_header(request.headers.get("content-type", ""))
+    if content_type != b"application/x-www-form-urlencoded":
+        raise UnsupportedForm("application/x-www-form-urlencoded required")
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+        raise BodyTooLarge("body too large")
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > max_bytes:
+            raise BodyTooLarge("body too large")
+    fields: dict[str, str] = {}
+    for name, value in parse_qsl(body.decode("utf-8", "replace"), keep_blank_values=True):
+        fields.setdefault(name, value)
+    return fields

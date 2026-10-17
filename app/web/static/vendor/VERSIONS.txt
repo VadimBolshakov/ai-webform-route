@@ -1,0 +1,25 @@
+Vendored front-end libraries (downloaded 2026-10-17 from cdn.jsdelivr.net/npm, files unmodified).
+Each version was published on npm at least two weeks before download.
+Check: sha256sum app/web/static/vendor/*.js app/web/static/vendor/*.css
+
+file              package                          version   npm publish date  source URL
+htmx.min.js       htmx.org                         2.0.11    2026-09-22        https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js
+marked.min.js     marked                           18.0.14   2026-09-22        https://cdn.jsdelivr.net/npm/marked@18.0.14/lib/marked.umd.js
+purify.min.js     dompurify                        3.4.16    2026-09-23        https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js
+highlight.min.js  @highlightjs/cdn-assets          11.12.0   2026-08-12        https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js
+hljs-light.css    @highlightjs/cdn-assets          11.12.0   2026-08-12        https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/github.min.css
+hljs-dark.css     @highlightjs/cdn-assets          11.12.0   2026-08-12        https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/github-dark.min.css
+
+SHA-256
+d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717  htmx.min.js
+21568877a938d2c4e7d74e27f18e60da96bb73a68809610ca39216e1efebae62  marked.min.js
+2c90a9b46d6463f26038a29b686e82bc91de01fdac9d5229e7cfe3b360134ea2  purify.min.js
+8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53  highlight.min.js
+3a9a5def8b9c311e5ae43abde85c63133185eed4f0d9f67fea4b00a8308cf066  hljs-light.css
+9f208d022102b1d0c7aebfecd8e42ca7997d5de636649d2b31ea63093d809019  hljs-dark.css
+
+Notes
+- marked.min.js and purify.min.js end with a sourceMappingURL comment; the .map files are not
+  vendored (only browser devtools request them).
+- htmx is configured in chat.html via <meta name="htmx-config"> with includeIndicatorStyles=false
+  and allowEval=false (strict CSP: no inline styles, no eval).

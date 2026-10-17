@@ -282,6 +282,7 @@ async def test_upload_limits(app, client, db, monkeypatch):
     assert name == "error" and data["message"] == "Сообщение длиннее 32000 символов"
     [(name, data)] = events((await send(client, chat.id, csrf, text="  ")).text)
     assert name == "error" and data["message"] == "Пустое сообщение"
+    assert "retry" not in data  # сообщение не сохранено — повторять через /retry нечего
     assert llm.calls == [] and await messages(db, chat.id) == []
 
 
@@ -375,7 +376,7 @@ async def test_llm_error_saves_partial_and_usage_error(app, client, db, notifier
     chat = await make_chat(db, u)
     r = await send(client, chat.id, csrf)
     ev = events(r.text)
-    assert ev == [("delta", {"t": "Част"}), ("error", {"message": "Ошибка модели, попробуйте ещё раз"})]
+    assert ev == [("delta", {"t": "Част"}), ("error", {"message": "Ошибка модели, попробуйте ещё раз", "retry": True})]
     msgs = await messages(db, chat.id)
     assert [(m.role, m.content, m.interrupted) for m in msgs] == [
         ("user", "Привет", False),
@@ -394,7 +395,7 @@ async def test_llm_error_without_text_saves_no_message(app, client, db):
     u, csrf = await signed_in(client, db)
     chat = await make_chat(db, u)
     ev = events((await send(client, chat.id, csrf)).text)
-    assert ev == [("error", {"message": "Модель перегружена, попробуйте позже"})]
+    assert ev == [("error", {"message": "Модель перегружена, попробуйте позже", "retry": True})]
     assert [m.role for m in await messages(db, chat.id)] == ["user"]
     assert [x.status for x in await usages(db)] == ["error"]
 
@@ -610,7 +611,7 @@ async def test_persistence_failure_on_error_path_still_emits_error(app, client, 
     r = await send(client, chat.id, csrf)
     assert events(r.text) == [
         ("delta", {"t": "Част"}),
-        ("error", {"message": "Ошибка модели, попробуйте ещё раз"}),
+        ("error", {"message": "Ошибка модели, попробуйте ещё раз", "retry": True}),
     ]
     await drain_background(app)
     assert "background task failed: RuntimeError" in caplog.text
@@ -623,7 +624,7 @@ async def test_persistence_failure_on_ok_path_emits_error(app, client, db):
     chat = await make_chat(db, u)
     _failing_factory(app)
     r = await send(client, chat.id, csrf)
-    assert events(r.text)[-1] == ("error", {"message": "Не удалось сохранить ответ"})
+    assert events(r.text)[-1] == ("error", {"message": "Не удалось сохранить ответ", "retry": True})
 
 
 async def test_persistence_failure_on_disconnect_does_not_raise(app, client, db, caplog):
@@ -658,3 +659,25 @@ async def test_cost_fixed_point(app, client, db):
     chat = await make_chat(db, u, title="t")
     data = events((await send(client, chat.id, csrf)).text)[-1][1]
     assert data["cost_usd"] == "0.0000001" and data["spend"] == "0.00"
+
+
+async def test_reply_and_title_control_chars_stripped(app, client, db):
+    use_llm(app, ok_script("От\x00в", "ет\x07\n\tок"), title="Ко\x00ты\x1b")
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    r = await send(client, chat.id, csrf)
+    assert events(r.text)[-1][0] == "done"
+    await drain_background(app)
+    [_, reply] = await messages(db, chat.id)
+    assert reply.content == "Ответ\n\tок"
+    await db.refresh(chat)
+    assert chat.title == "Коты"
+
+
+async def test_interrupted_reply_control_chars_stripped(app, client, db):
+    use_llm(app, [StreamDelta("ча\x00сть", "gen-1"), LLMError(500, "Ошибка", "x")])
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    await send(client, chat.id, csrf)
+    [_, reply] = await messages(db, chat.id)
+    assert reply.content == "часть" and reply.interrupted

@@ -1,19 +1,28 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+import re
+from decimal import Decimal
+from urllib.parse import urlencode, urlsplit
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import AuthContext, current_auth
 from app.billing.service import LimitExceeded, check_limit, month_spend
 from app.chat.context import build_messages, history_content, user_content
 from app.chat.service import (
+    AUTO_MODEL,
     DEFAULT_TITLE,
     SessionFactory,
     Turn,
+    chat_messages,
+    enabled_models,
     error_response,
     get_llm,
     get_owned_chat,
+    last_chat,
     model_supports_images,
+    recent_chats,
+    search_chats,
     sse_response,
     stream_reply,
 )
@@ -26,6 +35,7 @@ from app.files.upload import (
     UnsupportedForm,
     clean_text,
     parse_form,
+    parse_urlencoded,
 )
 from app.llm.openrouter import OpenRouterClient
 from app.models import Chat, Message, User
@@ -33,24 +43,22 @@ from app.security.csrf import verify_csrf
 from app.web.request_info import client_ip
 
 # Все POST здесь требуют заголовок X-CSRF-Token: тело никогда не разбирается Starlette
-# (его парсер пишет крупные файлы во временные файлы на диск).
-router = APIRouter(prefix="/app/chats")
+# (его парсер пишет крупные файлы во временные файлы на диск). HTMX шлёт заголовок из
+# hx-headers на <body>, chat.js — сам.
+router = APIRouter(prefix="/app")
 
 MAX_FILES = 5
 MAX_TEXT_CHARS = 32_000
+MAX_TITLE_CHARS = 200
+MAX_RENAME_BODY = 4096
+MAX_PAGE = 100_000
 MSG_RATE = "Слишком много запросов, подождите минуту"
 MSG_NO_IMAGES = "Выбранная модель не принимает изображения"
 MSG_EMPTY = "Пустое сообщение"
 MSG_TOO_LONG = f"Сообщение длиннее {MAX_TEXT_CHARS} символов"
 MSG_NOTHING_TO_RETRY = "Нечего повторять"
 
-
-async def _history(db: AsyncSession, chat_id: int) -> list[Message]:
-    return list(
-        (
-            await db.execute(select(Message).where(Message.chat_id == chat_id).order_by(Message.id))
-        ).scalars()
-    )
+_CHAT_PATH = re.compile(r"/app/chats/(\d+)")
 
 
 async def _precheck(request: Request, db: AsyncSession, user: User, model: str):
@@ -92,7 +100,7 @@ async def _start(
     return sse_response(stream_reply(request, llm, factory, turn))
 
 
-@router.post("")
+@router.post("/chats")
 async def create_chat(
     request: Request, ctx: AuthContext = Depends(current_auth), db: AsyncSession = Depends(get_db)
 ):
@@ -100,7 +108,10 @@ async def create_chat(
     chat = Chat(user_id=ctx.user.id)
     db.add(chat)
     await db.commit()
-    return RedirectResponse(f"/app/chats/{chat.id}", status_code=303)
+    url = f"/app/chats/{chat.id}"
+    if request.headers.get("hx-request") == "true":
+        return Response(status_code=204, headers={"HX-Redirect": url})
+    return RedirectResponse(url, status_code=303)
 
 
 def _require_csrf_header(request: Request, ctx: AuthContext) -> None:
@@ -120,7 +131,7 @@ async def _read_form(request: Request, ctx: AuthContext) -> ParsedForm:
         raise HTTPException(status_code=400)
 
 
-@router.post("/{chat_id}/messages")
+@router.post("/chats/{chat_id}/messages")
 async def send_message(
     chat_id: int,
     request: Request,
@@ -157,7 +168,7 @@ async def send_message(
     if not supports_images and any(a.kind == "image" for a in attachments):
         return error_response(MSG_NO_IMAGES)
 
-    history = await _history(db, chat.id)
+    history = await chat_messages(db, chat.id)
     stored = [
         {"name": a.name, "kind": "text", "text": a.text}
         if a.kind == "text"
@@ -174,7 +185,7 @@ async def send_message(
     )
 
 
-@router.post("/{chat_id}/retry")
+@router.post("/chats/{chat_id}/retry")
 async def retry(
     chat_id: int,
     request: Request,
@@ -192,7 +203,7 @@ async def retry(
     if error is not None:
         return error
 
-    msgs = await _history(db, chat.id)
+    msgs = await chat_messages(db, chat.id)
     if msgs and msgs[-1].role == "assistant":
         await db.delete(msgs.pop())
     if not msgs or msgs[-1].role != "user":
@@ -206,3 +217,173 @@ async def retry(
         model=model, history=msgs, content=history_content(last),
         first_user_text=last.content,
     )
+
+
+# --- pages ---------------------------------------------------------------------------------
+
+
+def _money(value: Decimal) -> str:
+    return f"{value:.2f}"
+
+
+async def _page_context(db: AsyncSession, ctx: AuthContext, current_id: int | None) -> dict:
+    """Everything the shared layout (sidebar, user menu, composer) needs."""
+    user = ctx.user
+    models = await enabled_models(db)
+    selected = user.default_model if any(m.model_id == user.default_model for m in models) else AUTO_MODEL
+    return {
+        "user": user,
+        "is_admin": user.role == "admin",
+        "csrf_token": ctx.session.csrf_token,
+        "chats": await recent_chats(db, user),
+        "current_id": current_id,
+        "models": models,
+        "auto_model": AUTO_MODEL,
+        "selected_model": selected,
+        "spend": _money(await month_spend(db, user.id)),
+        "limit": _money(user.monthly_limit_usd),
+    }
+
+
+def _render(request: Request, name: str, context: dict, status_code: int = 200):
+    return request.app.state.templates.TemplateResponse(
+        request, name, context, status_code=status_code
+    )
+
+
+@router.get("")
+async def app_home(
+    request: Request, ctx: AuthContext = Depends(current_auth), db: AsyncSession = Depends(get_db)
+):
+    chat = await last_chat(db, ctx.user)
+    if chat is not None:
+        return RedirectResponse(f"/app/chats/{chat.id}", status_code=303)
+    context = await _page_context(db, ctx, None)
+    return _render(request, "chat.html", {**context, "chat": None, "messages": []})
+
+
+@router.get("/chats/all")
+async def all_chats(
+    request: Request,
+    q: str = "",
+    page: int = Query(1, ge=1, le=MAX_PAGE),
+    ctx: AuthContext = Depends(current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    q = clean_text(q).strip()[:MAX_TITLE_CHARS]
+    results, has_next = await search_chats(db, ctx.user, q, page)
+
+    def page_url(n: int) -> str:
+        return "/app/chats/all?" + urlencode({"page": n, **({"q": q} if q else {})})
+
+    context = await _page_context(db, ctx, None)
+    return _render(
+        request,
+        "all_chats.html",
+        {
+            **context,
+            "q": q,
+            "results": results,
+            "prev_url": page_url(page - 1) if page > 1 else None,
+            "next_url": page_url(page + 1) if has_next else None,
+        },
+    )
+
+
+@router.get("/chats/sidebar")
+async def sidebar(
+    request: Request,
+    current: int | None = None,
+    ctx: AuthContext = Depends(current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sidebar fragment (chat.js refreshes it after a reply: new title, new order)."""
+    return await _sidebar(request, db, ctx.user, current)
+
+
+@router.get("/chats/{chat_id}")
+async def chat_page(
+    chat_id: int,
+    request: Request,
+    ctx: AuthContext = Depends(current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    chat = await get_owned_chat(db, ctx.user, chat_id)
+    context = await _page_context(db, ctx, chat.id)
+    return _render(
+        request, "chat.html", {**context, "chat": chat, "messages": await chat_messages(db, chat.id)}
+    )
+
+
+# --- sidebar actions (HTMX) ----------------------------------------------------------------
+
+
+async def _sidebar(request: Request, db: AsyncSession, user: User, current_id: int | None):
+    return _render(
+        request, "_chat_list.html", {"chats": await recent_chats(db, user), "current_id": current_id}
+    )
+
+
+async def _after_action(
+    request: Request, db: AsyncSession, user: User, deleted_id: int | None = None
+) -> Response:
+    """Updated sidebar fragment; or tell HTMX to reload/leave the page it was sent from."""
+    path = urlsplit(request.headers.get("hx-current-url", "")).path
+    if path == "/app/chats/all":
+        return Response(status_code=204, headers={"HX-Refresh": "true"})
+    m = _CHAT_PATH.fullmatch(path)
+    current_id = int(m.group(1)) if m else None
+    if deleted_id is not None and current_id == deleted_id:
+        return Response(status_code=204, headers={"HX-Redirect": "/app"})
+    return await _sidebar(request, db, user, current_id)
+
+
+@router.post("/chats/{chat_id}/rename")
+async def rename_chat(
+    chat_id: int,
+    request: Request,
+    ctx: AuthContext = Depends(current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_csrf_header(request, ctx)
+    chat = await get_owned_chat(db, ctx.user, chat_id)
+    try:
+        fields = await parse_urlencoded(request, max_bytes=MAX_RENAME_BODY)
+    except UnsupportedForm:
+        raise HTTPException(status_code=415)
+    except BodyTooLarge:
+        raise HTTPException(status_code=413)
+    title = " ".join(clean_text(fields.get("title", "")).split())[:MAX_TITLE_CHARS]
+    if not title:
+        raise HTTPException(status_code=400)
+    chat.title = title
+    await db.commit()
+    return await _after_action(request, db, ctx.user)
+
+
+@router.post("/chats/{chat_id}/pin")
+async def pin_chat(
+    chat_id: int,
+    request: Request,
+    ctx: AuthContext = Depends(current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_csrf_header(request, ctx)
+    chat = await get_owned_chat(db, ctx.user, chat_id)
+    chat.pinned = not chat.pinned
+    await db.commit()
+    return await _after_action(request, db, ctx.user)
+
+
+@router.post("/chats/{chat_id}/delete")
+async def delete_chat(
+    chat_id: int,
+    request: Request,
+    ctx: AuthContext = Depends(current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_csrf_header(request, ctx)
+    chat = await get_owned_chat(db, ctx.user, chat_id)
+    await db.delete(chat)  # сообщения — ON DELETE CASCADE, usage.chat_id — SET NULL
+    await db.commit()
+    return await _after_action(request, db, ctx.user, deleted_id=chat_id)

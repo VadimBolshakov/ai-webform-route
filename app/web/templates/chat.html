@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ru" data-theme="{{ user.theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {#- Строгий CSP: htmx не должен вставлять свой <style> и не должен вызывать eval. -#}
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "historyCacheSize": 0, "selfRequestsOnly": true}'>
+  <title>{% block title %}{{ chat.title if chat else "Новый чат" }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  {% if user.theme == "dark" %}
+  <link rel="stylesheet" href="/static/vendor/hljs-dark.css">
+  {% elif user.theme == "light" %}
+  <link rel="stylesheet" href="/static/vendor/hljs-light.css">
+  {% else %}
+  <link rel="stylesheet" href="/static/vendor/hljs-light.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="/static/vendor/hljs-dark.css" media="(prefers-color-scheme: dark)">
+  {% endif %}
+</head>
+<body class="app" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+<div class="layout">
+  <aside class="sidebar">
+    <button type="button" class="new-chat" hx-post="/app/chats">+ Новый чат</button>
+    {% include "_chat_list.html" %}
+    <a class="all-chats-link" href="/app/chats/all">Все чаты…</a>
+    <details class="user-menu">
+      <summary>👤 {{ user.username }} ▾</summary>
+      <div class="menu">
+        <a href="/app/settings">Настройки</a>
+        {% if is_admin %}<a href="/app/admin">Админка</a>{% endif %}
+        <form method="post" action="/app/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Выйти</button>
+        </form>
+      </div>
+    </details>
+  </aside>
+
+  <main class="chat" id="chat" data-chat-id-current="{{ chat.id if chat else '' }}">
+  {% block main %}
+    <header class="chat-head">
+      <h1 class="chat-title">{{ chat.title if chat else "Новый чат" }}</h1>
+      <button type="button" id="save-chat" class="link-button"{% if not chat %} hidden{% endif %}>💾 Сохранить весь чат (.md)</button>
+    </header>
+
+    <div id="messages" class="messages" aria-live="polite">
+      {% for m in messages %}{% include "_message.html" %}{% endfor %}
+      <p class="empty-hint"{% if messages %} hidden{% endif %}>Задайте вопрос — ответ появится здесь.</p>
+    </div>
+
+    <form id="composer" class="composer" autocomplete="off">
+      <ul id="file-chips" class="chips"></ul>
+      <div class="composer-row">
+        <label class="attach" title="Прикрепить файлы (до 5 по 10 МБ)">+
+          <input type="file" id="file-input" multiple hidden>
+        </label>
+        <textarea id="input" name="text" rows="1" maxlength="32000" placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)" aria-label="Сообщение"></textarea>
+        <button type="button" id="mic" class="mic" hidden title="Голосовой ввод — позже">🎤</button>
+        <button type="submit" id="send" class="primary">Отправить</button>
+        <button type="button" id="stop" hidden>Стоп</button>
+      </div>
+      <div class="composer-meta">
+        <label>Модель:
+          <select name="model" id="model">
+            <option value="{{ auto_model }}"{% if selected_model == auto_model %} selected{% endif %}>Auto</option>
+            {% for mdl in models %}
+            <option value="{{ mdl.model_id }}"{% if selected_model == mdl.model_id %} selected{% endif %}>{{ mdl.display_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <span id="spend">Расход: ${{ spend }} / ${{ limit }}</span>
+      </div>
+    </form>
+
+    {#- Заготовки для chat.js: та же разметка, что у сообщений истории. -#}
+    <template id="tpl-user">{% with m = {"role": "user", "id": "", "content": "", "attachments": [], "model": "", "interrupted": false} %}{% include "_message.html" %}{% endwith %}</template>
+    <template id="tpl-assistant">{% with m = {"role": "assistant", "id": "", "content": "", "attachments": [], "model": "", "interrupted": false} %}{% include "_message.html" %}{% endwith %}</template>
+    <template id="tpl-error"><div class="error-banner" role="alert"><span class="error-text"></span> <button type="button" class="retry">Повторить</button></div></template>
+  {% endblock %}
+  </main>
+</div>
+<script src="/static/vendor/htmx.min.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script src="/static/chat.js"></script>
+</body>
+</html>

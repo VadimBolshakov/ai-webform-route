@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.billing.service import month_spend, notify_thresholds, record_usage
+from app.files.upload import clean_text
 from app.llm.openrouter import MSG_MODEL_ERROR, LLMError, OpenRouterClient, StreamDelta, StreamDone
 from app.models import AllowedModel, Chat, Message, User
 
@@ -53,6 +54,66 @@ async def get_owned_chat(db: AsyncSession, user: User, chat_id: int) -> Chat:
     if chat is None or chat.user_id != user.id:
         raise HTTPException(status_code=404)
     return chat
+
+
+SIDEBAR_CHATS = 10
+CHATS_PER_PAGE = 50
+
+
+async def recent_chats(db: AsyncSession, user: User, limit: int = SIDEBAR_CHATS) -> list[Chat]:
+    """Sidebar: pinned first, then most recently updated."""
+    rows = await db.execute(
+        select(Chat)
+        .where(Chat.user_id == user.id)
+        .order_by(Chat.pinned.desc(), Chat.updated_at.desc(), Chat.id.desc())
+        .limit(limit)
+    )
+    return list(rows.scalars())
+
+
+async def last_chat(db: AsyncSession, user: User) -> Chat | None:
+    return await db.scalar(
+        select(Chat)
+        .where(Chat.user_id == user.id)
+        .order_by(Chat.updated_at.desc(), Chat.id.desc())
+        .limit(1)
+    )
+
+
+def _like_pattern(q: str) -> str:
+    """Substring pattern with LIKE wildcards taken literally (escape char: backslash)."""
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+async def search_chats(
+    db: AsyncSession, user: User, q: str, page: int, per_page: int = CHATS_PER_PAGE
+) -> tuple[list[Chat], bool]:
+    """One page of the user's chats (title ILIKE q when given). Returns (chats, has_next)."""
+    stmt = select(Chat).where(Chat.user_id == user.id)
+    if q:
+        stmt = stmt.where(Chat.title.ilike(_like_pattern(q), escape="\\"))
+    rows = await db.execute(
+        stmt.order_by(Chat.updated_at.desc(), Chat.id.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page + 1)
+    )
+    chats = list(rows.scalars())
+    return chats[:per_page], len(chats) > per_page
+
+
+async def enabled_models(db: AsyncSession) -> list[AllowedModel]:
+    rows = await db.execute(
+        select(AllowedModel)
+        .where(AllowedModel.enabled.is_(True))
+        .order_by(AllowedModel.display_name, AllowedModel.model_id)
+    )
+    return list(rows.scalars())
+
+
+async def chat_messages(db: AsyncSession, chat_id: int) -> list[Message]:
+    rows = await db.execute(select(Message).where(Message.chat_id == chat_id).order_by(Message.id))
+    return list(rows.scalars())
 
 
 async def model_supports_images(db: AsyncSession, model_id: str) -> bool:
@@ -167,6 +228,7 @@ async def _finish(
     generation_id: str | None = None,
 ) -> tuple[int | None, Decimal]:
     """Persist assistant message + usage in a short transaction. Returns (message_id, spend)."""
+    text = clean_text(text)
     after = turn.before + ((done.cost_usd or Decimal(0)) if done else Decimal(0))
     async with factory() as s:
         user = await s.get(User, turn.user_id)
@@ -228,7 +290,11 @@ async def _persist_quietly(state, coro: Coroutine) -> None:
 async def stream_reply(
     request: Request, llm: OpenRouterClient, factory: SessionFactory, turn: Turn
 ) -> AsyncIterator[bytes]:
-    """SSE body: deltas, then `done` or `error`. Persists the outcome in every case."""
+    """SSE body: deltas, then `done` or `error`. Persists the outcome in every case.
+
+    Errors here carry "retry": true — the user message is already saved, so POST …/retry
+    can regenerate the answer. Pre-stream errors (error_response) have no such flag.
+    """
     state = request.app.state
     parts: list[str] = []
     gen_id: str | None = None
@@ -281,7 +347,7 @@ async def stream_reply(
         )
         if state.llm_errors.failure():
             await _alert(state, ERROR_SERIES_ALERT)
-        yield sse("error", {"message": failure.user_message})
+        yield sse("error", {"message": failure.user_message, "retry": True})
         return
 
     try:
@@ -291,7 +357,7 @@ async def stream_reply(
         )
     except Exception:
         logger.error("chat reply not persisted")  # traceback логирует spawn()
-        yield sse("error", {"message": MSG_SAVE_FAILED})
+        yield sse("error", {"message": MSG_SAVE_FAILED, "retry": True})
         return
     state.llm_errors.success()
     if turn.first_reply:
@@ -314,7 +380,7 @@ async def stream_reply(
 
 
 def clean_title(raw: str) -> str:
-    title = " ".join(raw.replace("\r", " ").replace("\n", " ").split())
+    title = " ".join(clean_text(raw).replace("\r", " ").replace("\n", " ").split())
     title = title.strip("\"'«»„“”‘’` ").strip()
     return title[:TITLE_MAX_CHARS]
 
