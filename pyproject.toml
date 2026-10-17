@@ -15,6 +15,9 @@ dependencies = [
     "pyotp==2.9.0",
     "segno==1.6.1",
     "python-multipart==0.0.20",
+    "pypdf==6.21.1",
+    "python-docx==1.2.0",
+    "Pillow==13.0.0",
 ]
 
 [project.optional-dependencies]
