@@ -6,6 +6,7 @@ import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 import app.models  # noqa: F401  (регистрирует модели в Base.metadata)
@@ -37,6 +38,11 @@ def settings() -> Settings:
 
 @pytest_asyncio.fixture(scope="session")
 async def engine(settings):
+    db_name = make_url(settings.database_url).database or ""
+    if not db_name.endswith("_test"):
+        raise RuntimeError(
+            f"Отказ: тесты делают drop_all, а база {db_name!r} не оканчивается на '_test'"
+        )
     eng = create_async_engine(settings.database_url)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
