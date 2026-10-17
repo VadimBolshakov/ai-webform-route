@@ -85,6 +85,7 @@ async def test_animated_gif_first_frame():
     assert mime == "image/jpeg" and getattr(img, "n_frames", 1) == 1
 
 
+@pytest.mark.filterwarnings("ignore:Image size .* exceeds limit:PIL.Image.DecompressionBombWarning")
 async def test_decompression_bomb_rejected():
     buf = io.BytesIO()
     Image.new("1", (7000, 7000)).save(buf, "PNG")  # 49 Mpx, tiny file
