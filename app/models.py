@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -45,6 +46,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(10))
     totp_secret_enc: Mapped[str | None] = mapped_column(String(255))
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger)
     monthly_limit_usd: Mapped[Decimal] = mapped_column(Numeric(10, 4))
     answer_language: Mapped[str] = mapped_column(String(2), default="ru", server_default="ru")
     theme: Mapped[str] = mapped_column(String(6), default="system", server_default="system")

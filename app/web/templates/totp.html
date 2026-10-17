@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Код подтверждения{% endblock %}
+{% block content %}
+<form method="post" action="/a/{{ token }}/totp" class="login" autocomplete="off">
+  <h1>Код подтверждения</h1>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Код из приложения <input type="text" name="code" required maxlength="16" inputmode="numeric" autocomplete="one-time-code" autofocus></label>
+  <button type="submit">Подтвердить</button>
+</form>
+{% endblock %}

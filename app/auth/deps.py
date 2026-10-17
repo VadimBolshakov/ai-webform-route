@@ -33,7 +33,7 @@ async def current_auth(request: Request, db: AsyncSession = Depends(get_db)) -> 
     elif (
         user.role == "admin"
         and not user.totp_enabled
-        and not (path.startswith(TWO_FA_PATH) or path == LOGOUT_PATH)
+        and not (path == TWO_FA_PATH or path.startswith(TWO_FA_PATH + "/") or path == LOGOUT_PATH)
     ):
         raise HTTPException(status_code=303, headers={"Location": TWO_FA_PATH})
     await touch(db, s)

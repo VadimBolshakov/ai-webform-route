@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.account.routes import router as account_router
 from app.auth.routes import router as auth_router
 from app.config import Settings, get_settings
 from app.db import make_engine, make_sessionmaker
@@ -64,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await http_exception_handler(request, exc)
 
     app.include_router(auth_router)
+    app.include_router(account_router)
 
     @app.get("/healthz")
     async def healthz():

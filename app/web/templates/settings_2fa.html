@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Двухфакторная аутентификация{% endblock %}
+{% block content %}
+<section class="settings">
+  <h1>Двухфакторная аутентификация</h1>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if enabled %}
+    <p>Двухфакторная аутентификация включена.</p>
+    {% if is_admin %}
+      <p>Для администратора отключение недоступно.</p>
+    {% else %}
+      <form method="post" action="/app/settings/2fa/disable" class="login" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Пароль <input type="password" name="password" required maxlength="1024" autocomplete="current-password"></label>
+        <label>Код <input type="text" name="code" required maxlength="16" inputmode="numeric" autocomplete="one-time-code"></label>
+        <button type="submit">Отключить</button>
+      </form>
+    {% endif %}
+  {% else %}
+    <p>Отсканируйте QR-код в приложении-аутентификаторе и введите код.</p>
+    <div class="qr">{{ qr_svg|safe }}</div>
+    <form method="post" action="/app/settings/2fa/enable" class="login" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Код <input type="text" name="code" required maxlength="16" inputmode="numeric" autocomplete="one-time-code" autofocus></label>
+      <button type="submit">Включить</button>
+    </form>
+  {% endif %}
+</section>
+{% endblock %}
