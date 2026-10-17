@@ -15,6 +15,7 @@ from app.llm.openrouter import LLMError, StreamDelta
 from app.models import AllowedModel, AuthSession, Chat, Message, Usage, User
 from app.security.ratelimit import SlidingWindowLimiter
 from tests.fakes import HANG, FakeLLM, FakeNotifier, drain_background, ok_script
+from tests.fakes import done as done_event
 from tests.test_auth import login, make_user
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -71,11 +72,16 @@ def events(text: str) -> list[tuple[str, dict]]:
 
 async def send(client, chat_id, csrf, text="Привет", model="openrouter/auto", files=None):
     headers = {"X-CSRF-Token": csrf} if csrf else {}
+    # Поля — частями без filename, чтобы тело всегда было multipart.
+    parts = [("text", (None, text)), ("model", (None, model)), *(files or [])]
+    return await client.post(f"/app/chats/{chat_id}/messages", files=parts, headers=headers)
+
+
+async def raw_send(client, chat_id, csrf, body: bytes):
     return await client.post(
         f"/app/chats/{chat_id}/messages",
-        data={"text": text, "model": model},
-        files=files or [],
-        headers=headers,
+        content=body,
+        headers={"X-CSRF-Token": csrf, "Content-Type": "multipart/form-data; boundary=BND"},
     )
 
 
@@ -491,13 +497,16 @@ async def test_csrf_required(app, client, db):
     assert (await send(client, chat.id, "wrong")).status_code == 403
     assert (await client.post(f"/app/chats/{chat.id}/retry")).status_code == 403
     assert llm.calls == [] and await messages(db, chat.id) == []
-    # токен в поле формы тоже принимается
+    # токен только в заголовке: поле формы не принимается (тело не разбирается Starlette)
     r = await client.post(
         f"/app/chats/{chat.id}/messages",
-        data={"text": "hi", "csrf_token": csrf},
-        files=[("files", ("a.txt", b"a"))],
+        files=[("text", (None, "hi")), ("csrf_token", (None, csrf)), ("files", ("a.txt", b"a"))],
     )
-    assert events(r.text)[-1][0] == "done"
+    assert r.status_code == 403
+    assert (await client.post("/app/chats", data={"csrf_token": csrf})).status_code == 403
+    r = await client.post(f"/app/chats/{chat.id}/retry", data={"csrf_token": csrf})
+    assert r.status_code == 403
+    assert llm.calls == [] and await messages(db, chat.id) == []
 
 
 async def test_unauthenticated_404(app, client, db):
@@ -506,3 +515,146 @@ async def test_unauthenticated_404(app, client, db):
     chat = await make_chat(db, u)
     assert (await client.post("/app/chats")).status_code == 404
     assert (await send(client, chat.id, "x")).status_code == 404
+
+
+async def test_non_multipart_rejected(app, client, db):
+    llm = use_llm(app)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    r = await client.post(f"/app/chats/{chat.id}/messages", data={"text": "hi"},
+                          headers={"X-CSRF-Token": csrf})
+    assert r.status_code == 415
+    assert llm.calls == [] and await messages(db, chat.id) == []
+
+
+async def test_body_too_large_rejected(app, client, db, monkeypatch):
+    use_llm(app)
+    monkeypatch.setattr(app.state.settings, "max_upload_mb", 1)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    huge = [("files", (f"f{i}.txt", b"a" * (1024 * 1024))) for i in range(9)]
+    r = await send(client, chat.id, csrf, files=huge)
+    assert r.status_code == 413
+    assert await messages(db, chat.id) == []
+
+
+async def test_control_chars_stripped(app, client, db):
+    llm = use_llm(app)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    # httpx экранирует управляющие символы в filename — тело собираем вручную.
+    body = (
+        '--BND\r\nContent-Disposition: form-data; name="text"\r\n\r\n'
+        "При\x00вет\x1b\n\tок\r\n"
+        '--BND\r\nContent-Disposition: form-data; name="files"; filename="a\x00b\x07.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\nxy\r\n--BND--\r\n"
+    ).encode()
+    r = await raw_send(client, chat.id, csrf, body)
+    assert r.status_code == 200 and events(r.text)[-1][0] == "done"
+    [user_msg, _] = await messages(db, chat.id)
+    assert user_msg.content == "Привет\n\tок"
+    assert user_msg.attachments == [{"name": "ab.txt", "kind": "text", "text": "xy"}]
+    assert llm.calls[0][1][-1]["content"].endswith("Привет\n\tок")
+
+
+def test_engine_hides_parameters(app):
+    assert app.state.engine.sync_engine.hide_parameters is True
+
+
+async def test_empty_file_input_ignored(app, client, db):
+    llm = use_llm(app)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    # браузер шлёт пустое поле файла как filename="" без данных (httpx так не умеет)
+    body = (
+        '--BND\r\nContent-Disposition: form-data; name="text"\r\n\r\nтолько текст\r\n'
+        '--BND\r\nContent-Disposition: form-data; name="files"; filename=""\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n\r\n--BND--\r\n"
+    ).encode()
+    r = await raw_send(client, chat.id, csrf, body)
+    assert events(r.text)[-1][0] == "done"
+    [user_msg, _] = await messages(db, chat.id)
+    assert user_msg.attachments == []
+    assert llm.calls[0][1][-1]["content"] == "только текст"
+
+
+async def test_retry_model_from_query(app, client, db):
+    llm = use_llm(app)
+    db.add(AllowedModel(model_id="vendor/on", display_name="On", enabled=True))
+    await db.commit()
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    await send(client, chat.id, csrf)
+    r = await client.post(f"/app/chats/{chat.id}/retry?model=vendor/on",
+                          headers={"X-CSRF-Token": csrf})
+    assert events(r.text)[-1][0] == "done"
+    assert llm.calls[1][0] == "vendor/on"
+
+
+def _failing_factory(app):
+    class Boom:
+        async def __aenter__(self):
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    app.dependency_overrides[get_session_factory] = lambda: Boom
+
+
+async def test_persistence_failure_on_error_path_still_emits_error(app, client, db, caplog):
+    use_llm(app, [StreamDelta("Част", "g"), LLMError(500, "Ошибка модели, попробуйте ещё раз")])
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    _failing_factory(app)
+    r = await send(client, chat.id, csrf)
+    assert events(r.text) == [
+        ("delta", {"t": "Част"}),
+        ("error", {"message": "Ошибка модели, попробуйте ещё раз"}),
+    ]
+    await drain_background(app)
+    assert "background task failed: RuntimeError" in caplog.text
+    assert "Част" not in caplog.text and "Привет" not in caplog.text
+
+
+async def test_persistence_failure_on_ok_path_emits_error(app, client, db):
+    use_llm(app)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    _failing_factory(app)
+    r = await send(client, chat.id, csrf)
+    assert events(r.text)[-1] == ("error", {"message": "Не удалось сохранить ответ"})
+
+
+async def test_persistence_failure_on_disconnect_does_not_raise(app, client, db, caplog):
+    llm = use_llm(app, [StreamDelta("Прив", "g"), HANG])
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    _failing_factory(app)
+    out = await _asgi_post(app, client, f"/app/chats/{chat.id}/messages", csrf,
+                           {"text": "Привет"}, llm.hanging.wait)
+    await drain_background(app)
+    assert [e for e, _ in events(out)] == ["delta"]
+    assert "background task failed: RuntimeError" in caplog.text
+
+
+async def test_interrupt_after_done_uses_done(app, client, db):
+    llm = use_llm(app, [StreamDelta("Всё", "gen-a"), done_event(gen="gen-final", cost="0.002"), HANG])
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u)
+    await _asgi_post(app, client, f"/app/chats/{chat.id}/messages", csrf,
+                     {"text": "Привет"}, llm.hanging.wait)
+    await drain_background(app)
+    [usage] = await usages(db)
+    assert usage.status == "interrupted" and usage.generation_id == "gen-final"
+    assert usage.cost_usd == Decimal("0.002") and usage.prompt_tokens == 10
+    msgs = await messages(db, chat.id)
+    assert msgs[-1].content == "Всё" and msgs[-1].interrupted is True
+
+
+async def test_cost_fixed_point(app, client, db):
+    use_llm(app, ok_script("x", cost="1E-7"))
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    data = events((await send(client, chat.id, csrf)).text)[-1][1]
+    assert data["cost_usd"] == "0.0000001" and data["spend"] == "0.00"

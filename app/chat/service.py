@@ -94,7 +94,14 @@ def spawn(state, coro: Coroutine) -> asyncio.Task:
     """create_task with a strong reference on app.state (so the task is not GC'd)."""
     task = asyncio.create_task(coro)
     state.background_tasks.add(task)
-    task.add_done_callback(state.background_tasks.discard)
+
+    def _done(t: asyncio.Task) -> None:
+        state.background_tasks.discard(t)
+        if not t.cancelled() and (exc := t.exception()) is not None:
+            # Тип и traceback без текста сообщений (у движка hide_parameters=True).
+            logger.error("background task failed: %s", type(exc).__name__, exc_info=exc)
+
+    task.add_done_callback(_done)
     return task
 
 
@@ -202,6 +209,22 @@ async def _alert(state, text: str) -> None:
         logger.exception("failed to send alert")
 
 
+def _interrupted(state, factory, turn, parts, done, gen_id, latency_ms) -> Coroutine:
+    """Partial reply; a StreamDone already received (if any) supplies cost and generation id."""
+    return _finish(
+        state, factory, turn, text="".join(parts), done=done, status="interrupted",
+        latency_ms=latency_ms, generation_id=done.generation_id if done else gen_id,
+    )
+
+
+async def _persist_quietly(state, coro: Coroutine) -> None:
+    """Shielded persistence whose failure is logged, never raised (cancellation still is)."""
+    try:
+        await shielded(state, coro)
+    except Exception:
+        logger.error("chat outcome not persisted")  # traceback логирует spawn()
+
+
 async def stream_reply(
     request: Request, llm: OpenRouterClient, factory: SessionFactory, turn: Turn
 ) -> AsyncIterator[bytes]:
@@ -237,20 +260,12 @@ async def stream_reply(
             gen_id = exc.generation_id or gen_id
     except (asyncio.CancelledError, GeneratorExit):
         # Клиент ушёл: сохраняем то, что успели получить; стоимость дотянет фоновая задача.
-        await shielded(
-            state,
-            _finish(state, factory, turn, text="".join(parts), done=None, status="interrupted",
-                    latency_ms=latency(), generation_id=gen_id),
-        )
+        await _persist_quietly(state, _interrupted(state, factory, turn, parts, done, gen_id, latency()))
         raise
 
     text = "".join(parts)
     if disconnected:
-        await shielded(
-            state,
-            _finish(state, factory, turn, text=text, done=None, status="interrupted",
-                    latency_ms=latency(), generation_id=gen_id),
-        )
+        await _persist_quietly(state, _interrupted(state, factory, turn, parts, done, gen_id, latency()))
         return
 
     if failure is None and done is None:
@@ -258,7 +273,7 @@ async def stream_reply(
 
     if failure is not None:
         logger.warning("chat stream failed: status=%s", failure.status)
-        await shielded(
+        await _persist_quietly(
             state,
             _finish(state, factory, turn, text=text, done=None, status="error",
                     latency_ms=latency(), generation_id=gen_id,
@@ -275,7 +290,7 @@ async def stream_reply(
             _finish(state, factory, turn, text=text, done=done, status="ok", latency_ms=latency()),
         )
     except Exception:
-        logger.exception("failed to persist chat reply")
+        logger.error("chat reply not persisted")  # traceback логирует spawn()
         yield sse("error", {"message": MSG_SAVE_FAILED})
         return
     state.llm_errors.success()
@@ -287,7 +302,7 @@ async def stream_reply(
             "model": done.model or turn.model,
             "prompt_tokens": done.prompt_tokens,
             "completion_tokens": done.completion_tokens,
-            "cost_usd": None if done.cost_usd is None else str(done.cost_usd),
+            "cost_usd": None if done.cost_usd is None else f"{done.cost_usd:f}",
             "message_id": message_id,
             "spend": f"{after:.2f}",
             "limit": f"{turn.limit:.2f}",

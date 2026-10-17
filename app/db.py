@@ -10,7 +10,8 @@ class Base(DeclarativeBase):
 
 
 def make_engine(database_url: str) -> AsyncEngine:
-    return create_async_engine(database_url, pool_pre_ping=True)
+    # hide_parameters: тексты сообщений не попадают в сообщения об ошибках и логи.
+    return create_async_engine(database_url, pool_pre_ping=True, hide_parameters=True)
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

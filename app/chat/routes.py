@@ -19,12 +19,21 @@ from app.chat.service import (
 )
 from app.db import get_db, get_session_factory
 from app.files.extract import AttachmentError, extract_attachment
-from app.files.upload import MalformedForm, ParsedForm, parse_form
+from app.files.upload import (
+    BodyTooLarge,
+    MalformedForm,
+    ParsedForm,
+    UnsupportedForm,
+    clean_text,
+    parse_form,
+)
 from app.llm.openrouter import OpenRouterClient
 from app.models import Chat, Message, User
-from app.security.csrf import require_csrf, verify_csrf
+from app.security.csrf import verify_csrf
 from app.web.request_info import client_ip
 
+# Все POST здесь требуют заголовок X-CSRF-Token: тело никогда не разбирается Starlette
+# (его парсер пишет крупные файлы во временные файлы на диск).
 router = APIRouter(prefix="/app/chats")
 
 MAX_FILES = 5
@@ -87,27 +96,28 @@ async def _start(
 async def create_chat(
     request: Request, ctx: AuthContext = Depends(current_auth), db: AsyncSession = Depends(get_db)
 ):
-    await require_csrf(request, ctx.session)
+    _require_csrf_header(request, ctx)
     chat = Chat(user_id=ctx.user.id)
     db.add(chat)
     await db.commit()
     return RedirectResponse(f"/app/chats/{chat.id}", status_code=303)
 
 
+def _require_csrf_header(request: Request, ctx: AuthContext) -> None:
+    verify_csrf(request.headers.get("x-csrf-token"), ctx.session)
+
+
 async def _read_form(request: Request, ctx: AuthContext) -> ParsedForm:
-    header = request.headers.get("x-csrf-token")
-    if header:
-        verify_csrf(header, ctx.session)
+    _require_csrf_header(request, ctx)
     max_bytes = request.app.state.settings.max_upload_mb * 1024 * 1024
     try:
-        form = await parse_form(request, max_file_bytes=max_bytes, max_files=MAX_FILES)
+        return await parse_form(request, max_file_bytes=max_bytes, max_files=MAX_FILES)
+    except UnsupportedForm:
+        raise HTTPException(status_code=415)
+    except BodyTooLarge:
+        raise HTTPException(status_code=413)
     except MalformedForm:
-        if not header:
-            raise HTTPException(status_code=403)
         raise HTTPException(status_code=400)
-    if not header:
-        verify_csrf(form.fields.get("csrf_token"), ctx.session)
-    return form
 
 
 @router.post("/{chat_id}/messages")
@@ -122,12 +132,12 @@ async def send_message(
     user = ctx.user
     chat = await get_owned_chat(db, user, chat_id)
     form = await _read_form(request, ctx)
-    model = form.fields.get("model") or user.default_model
+    model = clean_text(form.fields.get("model", "")).strip()[:200] or user.default_model
     error, supports_images = await _precheck(request, db, user, model)
     if error is not None:
         return error
 
-    text = form.fields.get("text", "")
+    text = clean_text(form.fields.get("text", ""))
     if form.error:
         return error_response(form.error)
     if len(text) > MAX_TEXT_CHARS:
@@ -141,6 +151,9 @@ async def send_message(
         ]
     except AttachmentError as exc:
         return error_response(str(exc))
+    for a in attachments:
+        if a.text is not None:
+            a.text = clean_text(a.text)
     if not supports_images and any(a.kind == "image" for a in attachments):
         return error_response(MSG_NO_IMAGES)
 
@@ -172,10 +185,9 @@ async def retry(
 ):
     user = ctx.user
     chat = await get_owned_chat(db, user, chat_id)
-    await require_csrf(request, ctx.session)
-    form = await request.form()
-    model = form.get("model") if isinstance(form.get("model"), str) else None
-    model = model or user.default_model
+    _require_csrf_header(request, ctx)
+    # Модель — из query (?model=), тело не читается.
+    model = clean_text(request.query_params.get("model", "")).strip()[:200] or user.default_model
     error, _ = await _precheck(request, db, user, model)
     if error is not None:
         return error
