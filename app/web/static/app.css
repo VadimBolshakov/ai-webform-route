@@ -211,3 +211,10 @@ body.app button.chip-remove { border: none; background: none; padding: 0 0.15rem
 .sessions form { margin-top: 0.3rem; }
 .spend-table { border-collapse: collapse; }
 .spend-table th, .spend-table td { border: 1px solid var(--border); padding: 0.3rem 0.7rem; text-align: left; }
+
+.admin-page > * { max-width: none; }
+.admin-table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.9rem; }
+.admin-table th, .admin-table td { border-bottom: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; vertical-align: middle; }
+.admin-page form.inline { display: inline-flex; gap: 0.3rem; margin-right: 0.4rem; }
+.admin-page .invite-new { margin: 0.75rem 0; }
+.admin-page .invite-new input { max-width: 100%; }

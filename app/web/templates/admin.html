@@ -1,0 +1,99 @@
+{% extends "chat.html" %}
+{% block title %}Админка{% endblock %}
+{% block main %}
+<section class="settings-page admin-page">
+  <h1>Админка</h1>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+  <h2>Пользователи</h2>
+  <table class="admin-table">
+    <thead><tr><th>Логин</th><th>Роль</th><th>Активен</th><th>Расход / лимит, $</th><th>Последняя активность</th><th>Действия</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>{{ u.role }}</td>
+        <td>{{ "да" if u.is_active else "нет" }}</td>
+        <td>{{ u.spend }} / {{ u.limit }}</td>
+        <td>{{ u.last_seen }}</td>
+        <td>
+          <form method="post" action="/app/admin/users/{{ u.id }}/limit" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="text" name="limit" value="{{ u.limit }}" inputmode="decimal" maxlength="12" size="8" aria-label="Лимит, $" required>
+            <button type="submit">Сохранить</button>
+          </form>
+          {% if not u.is_self and u.role != "admin" %}
+          <form method="post" action="/app/admin/users/{{ u.id }}/{{ 'block' if u.is_active else 'unblock' }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">{{ "Заблокировать" if u.is_active else "Разблокировать" }}</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Приглашения</h2>
+  {% if invite_url %}
+  <div class="invite-new" role="status">
+    <p>Ссылка показывается один раз. Скопируйте её сейчас:</p>
+    <input type="text" id="invite-url" value="{{ invite_url }}" readonly size="60" aria-label="Ссылка-приглашение">
+    <button type="button" id="copy-invite">Копировать</button>
+  </div>
+  {% endif %}
+  <form method="post" action="/app/admin/invites">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="primary">Создать приглашение</button>
+  </form>
+  <table class="admin-table">
+    <thead><tr><th>№</th><th>Статус</th><th>Действует до</th><th></th></tr></thead>
+    <tbody>
+    {% for i in invites %}
+      <tr>
+        <td>{{ i.id }}</td><td>{{ i.status_label }}</td><td>{{ i.expires_at }}</td>
+        <td>{% if i.status == "active" %}
+          <form method="post" action="/app/admin/invites/{{ i.id }}/revoke" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Отозвать</button>
+          </form>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4">Приглашений нет</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Модели</h2>
+  <table class="admin-table">
+    <thead><tr><th>Название</th><th>ID</th><th>Изображения</th><th>Включена</th><th></th></tr></thead>
+    <tbody>
+    {% for m in all_models %}
+      <tr>
+        <td>{{ m.display_name }}</td><td>{{ m.model_id }}</td>
+        <td>{{ "да" if m.supports_images else "нет" }}</td>
+        <td>{{ "да" if m.enabled else "нет" }}</td>
+        <td>
+          <form method="post" action="/app/admin/models/{{ m.id }}/toggle" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">{{ "Выключить" if m.enabled else "Включить" }}</button>
+          </form>
+          <form method="post" action="/app/admin/models/{{ m.id }}/delete" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Удалить</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">Моделей нет</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/app/admin/models" class="stack" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>ID модели в OpenRouter <input type="text" name="model_id" required maxlength="200" placeholder="vendor/model"></label>
+    <button type="submit" class="primary">Добавить модель</button>
+  </form>
+  <script src="/static/admin.js"></script>
+</section>
+{% endblock %}

@@ -1,5 +1,4 @@
 import re
-from decimal import Decimal
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,12 +9,10 @@ from app.auth.deps import AuthContext, current_auth
 from app.billing.service import LimitExceeded, check_limit, month_spend
 from app.chat.context import build_messages, history_content, user_content
 from app.chat.service import (
-    AUTO_MODEL,
     DEFAULT_TITLE,
     SessionFactory,
     Turn,
     chat_messages,
-    enabled_models,
     error_response,
     get_llm,
     get_owned_chat,
@@ -40,6 +37,7 @@ from app.files.upload import (
 from app.llm.openrouter import OpenRouterClient
 from app.models import Chat, Message, User
 from app.security.csrf import verify_csrf
+from app.web.layout import page_context
 from app.web.request_info import client_ip
 
 # Все POST здесь требуют заголовок X-CSRF-Token: тело никогда не разбирается Starlette
@@ -222,29 +220,6 @@ async def retry(
 # --- pages ---------------------------------------------------------------------------------
 
 
-def _money(value: Decimal) -> str:
-    return f"{value:.2f}"
-
-
-async def _page_context(db: AsyncSession, ctx: AuthContext, current_id: int | None) -> dict:
-    """Everything the shared layout (sidebar, user menu, composer) needs."""
-    user = ctx.user
-    models = await enabled_models(db)
-    selected = user.default_model if any(m.model_id == user.default_model for m in models) else AUTO_MODEL
-    return {
-        "user": user,
-        "is_admin": user.role == "admin",
-        "csrf_token": ctx.session.csrf_token,
-        "chats": await recent_chats(db, user),
-        "current_id": current_id,
-        "models": models,
-        "auto_model": AUTO_MODEL,
-        "selected_model": selected,
-        "spend": _money(await month_spend(db, user.id)),
-        "limit": _money(user.monthly_limit_usd),
-    }
-
-
 def _render(request: Request, name: str, context: dict, status_code: int = 200):
     return request.app.state.templates.TemplateResponse(
         request, name, context, status_code=status_code
@@ -258,7 +233,7 @@ async def app_home(
     chat = await last_chat(db, ctx.user)
     if chat is not None:
         return RedirectResponse(f"/app/chats/{chat.id}", status_code=303)
-    context = await _page_context(db, ctx, None)
+    context = await page_context(db, ctx, None)
     return _render(request, "chat.html", {**context, "chat": None, "messages": []})
 
 
@@ -276,7 +251,7 @@ async def all_chats(
     def page_url(n: int) -> str:
         return "/app/chats/all?" + urlencode({"page": n, **({"q": q} if q else {})})
 
-    context = await _page_context(db, ctx, None)
+    context = await page_context(db, ctx, None)
     return _render(
         request,
         "all_chats.html",
@@ -309,7 +284,7 @@ async def chat_page(
     db: AsyncSession = Depends(get_db),
 ):
     chat = await get_owned_chat(db, ctx.user, chat_id)
-    context = await _page_context(db, ctx, chat.id)
+    context = await page_context(db, ctx, chat.id)
     return _render(
         request, "chat.html", {**context, "chat": chat, "messages": await chat_messages(db, chat.id)}
     )

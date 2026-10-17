@@ -28,7 +28,6 @@ from app.auth.sessions import (
     utcnow,
 )
 from app.billing.service import month_spend
-from app.chat.routes import _page_context
 from app.chat.service import enabled_models
 from app.db import get_db
 from app.files.upload import BodyTooLarge, MalformedForm, UnsupportedForm, parse_urlencoded
@@ -38,6 +37,7 @@ from app.security.crypto import decrypt, encrypt
 from app.security.csrf import require_csrf, verify_csrf
 from app.security.passwords import MAX_LENGTH, hash_password, validate_password, verify_password
 from app.security.totp import new_totp_secret, provisioning_qr_svg
+from app.web.layout import page_context
 from app.web.request_info import client_ip
 
 router = APIRouter(prefix="/app/settings")
@@ -61,7 +61,7 @@ async def _page(
         request,
         "settings_2fa.html",
         {
-            **await _page_context(db, ctx, None),
+            **await page_context(db, ctx, None),
             "enabled": user.totp_enabled,
             "qr_svg": qr,
             "error": error,
@@ -238,7 +238,7 @@ async def _settings_page(
         for s in rows
     ]
     context = {
-        **await _page_context(db, ctx, None),
+        **await page_context(db, ctx, None),
         "prefs": prefs
         or {
             "answer_language": user.answer_language,
