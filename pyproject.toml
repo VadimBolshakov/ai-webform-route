@@ -18,13 +18,14 @@ dependencies = [
     "pypdf==6.21.1",
     "python-docx==1.2.0",
     "Pillow==13.0.0",
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.4",
     "pytest-asyncio==1.2.0",
-    "httpx==0.28.1",
+    "respx==0.23.1",
 ]
 
 [tool.setuptools.packages.find]
