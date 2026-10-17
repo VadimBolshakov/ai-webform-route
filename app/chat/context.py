@@ -30,7 +30,7 @@ def user_content(text: str, attachments: list[Attachment]) -> str | list[dict]:
     return parts
 
 
-def _history_content(msg: Message) -> str:
+def history_content(msg: Message) -> str:
     blocks = []
     for a in msg.attachments or []:
         if a.get("kind") == "image":
@@ -62,7 +62,7 @@ def build_messages(
     used = estimate_tokens(system) + _estimate_content(new_user_content)
     kept: list[dict] = []
     for msg in reversed(history):
-        content = _history_content(msg)
+        content = history_content(msg)
         cost = estimate_tokens(content)
         if used + cost > budget:
             break

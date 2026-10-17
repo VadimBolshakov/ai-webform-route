@@ -21,3 +21,8 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
     """Сессия на запрос; engine создаётся в create_app и хранится в app.state."""
     async with request.app.state.sessionmaker() as session:
         yield session
+
+
+def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
+    """Фабрика коротких сессий для работы вне жизненного цикла запроса (после стрима, фон)."""
+    return request.app.state.sessionmaker

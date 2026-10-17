@@ -3,6 +3,14 @@ import hmac
 from fastapi import HTTPException, Request
 
 
+def verify_csrf(supplied, session) -> None:
+    """403 unless `supplied` matches the session's CSRF token."""
+    if not isinstance(supplied, str) or not supplied:
+        raise HTTPException(status_code=403)
+    if not hmac.compare_digest(supplied.encode(), session.csrf_token.encode()):
+        raise HTTPException(status_code=403)
+
+
 async def require_csrf(request: Request, session) -> None:
     """Сверяет X-CSRF-Token или поле формы csrf_token с токеном сессии."""
     supplied = request.headers.get("x-csrf-token")
@@ -12,7 +20,4 @@ async def require_csrf(request: Request, session) -> None:
         except Exception:
             form = {}
         supplied = form.get("csrf_token")
-    if not isinstance(supplied, str) or not supplied:
-        raise HTTPException(status_code=403)
-    if not hmac.compare_digest(supplied.encode(), session.csrf_token.encode()):
-        raise HTTPException(status_code=403)
+    verify_csrf(supplied, session)

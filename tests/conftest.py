@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 import app.models  # noqa: F401  (регистрирует модели в Base.metadata)
 from app.config import Settings
-from app.db import Base, get_db
+from app.db import Base, get_db, get_session_factory
 from app.main import create_app
 
 if sys.platform == "win32":
@@ -73,7 +74,14 @@ def app(settings, db):
     async def _get_db():
         yield db
 
+    @asynccontextmanager
+    async def _shared_session():
+        # Пост-стримовая запись идёт через фабрику сессий; в тестах — та же сессия,
+        # чтобы откат внешней транзакции изолировал и её.
+        yield db
+
     application.dependency_overrides[get_db] = _get_db
+    application.dependency_overrides[get_session_factory] = lambda: _shared_session
     return application
 
 
