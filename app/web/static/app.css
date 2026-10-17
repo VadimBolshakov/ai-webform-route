@@ -188,3 +188,26 @@ body.app button.chip-remove { border: none; background: none; padding: 0 0.15rem
   .chat { min-height: 70vh; }
   .messages, .composer, .chat-head, .all-chats { padding-left: 0.75rem; padding-right: 0.75rem; }
 }
+
+/* --- settings --- */
+.settings-page { padding: 1rem 1.25rem; overflow-y: auto; }
+.settings-page > *, .settings-page section > * { max-width: 40rem; }
+.settings-page h1 { font-size: 1.3rem; }
+.settings-page h2 { font-size: 1.1rem; margin-top: 2rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+.settings-page h3 { font-size: 1rem; margin-top: 1.25rem; }
+.settings-page .stack { display: grid; gap: 0.7rem; }
+.settings-page .stack label { display: grid; gap: 0.25rem; }
+.settings-page .stack label.check { display: block; }
+.settings-page input[type="text"], .settings-page input[type="password"], .settings-page select, .settings-page textarea {
+  padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+}
+.settings-page .error { color: var(--danger); }
+.settings-page .notice { background: var(--user-bg); padding: 0.5rem 0.8rem; border-radius: 8px; }
+.settings-page .muted { color: var(--muted); font-size: 0.9rem; }
+.settings-page .qr svg { max-width: 14rem; height: auto; background: #fff; }
+.sessions { list-style: none; padding: 0; margin: 0 0 0.75rem; display: grid; gap: 0.6rem; }
+.sessions li { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem; background: var(--surface); }
+.sessions .badge { background: var(--accent); color: var(--accent-text); border-radius: 999px; padding: 0 0.5rem; font-size: 0.78rem; }
+.sessions form { margin-top: 0.3rem; }
+.spend-table { border-collapse: collapse; }
+.spend-table th, .spend-table td { border: 1px solid var(--border); padding: 0.3rem 0.7rem; text-align: left; }

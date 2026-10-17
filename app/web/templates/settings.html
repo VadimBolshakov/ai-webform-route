@@ -1,0 +1,108 @@
+{% extends "chat.html" %}
+{% block title %}Настройки{% endblock %}
+{% block main %}
+<section class="settings-page">
+  <h1>Настройки</h1>
+  {% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+
+  <section id="answers">
+    <h2>Ответы и оформление</h2>
+    {% if errors.prefs %}<p class="error" role="alert">{{ errors.prefs }}</p>{% endif %}
+    <form method="post" action="/app/settings/preferences" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Язык ответа
+        <select name="answer_language">
+          <option value="ru"{% if prefs.answer_language == "ru" %} selected{% endif %}>Русский</option>
+          <option value="en"{% if prefs.answer_language == "en" %} selected{% endif %}>English</option>
+        </select>
+      </label>
+      <label>Модель по умолчанию
+        <select name="default_model">
+          <option value="{{ auto_model }}"{% if prefs.default_model == auto_model %} selected{% endif %}>Auto</option>
+          {% for mdl in models %}
+          <option value="{{ mdl.model_id }}"{% if prefs.default_model == mdl.model_id %} selected{% endif %}>{{ mdl.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Тема
+        <select name="theme">
+          <option value="system"{% if prefs.theme == "system" %} selected{% endif %}>Как в системе</option>
+          <option value="light"{% if prefs.theme == "light" %} selected{% endif %}>Светлая</option>
+          <option value="dark"{% if prefs.theme == "dark" %} selected{% endif %}>Тёмная</option>
+        </select>
+      </label>
+      <label>Свой системный промпт (до 2000 символов)
+        <textarea name="system_prompt" rows="5" maxlength="2000">{{ prefs.system_prompt }}</textarea>
+      </label>
+      <button type="submit" class="primary">Сохранить</button>
+    </form>
+  </section>
+
+  <section id="security">
+    <h2>Безопасность</h2>
+    <h3>Смена пароля</h3>
+    {% if errors.password %}<p class="error" role="alert">{{ errors.password }}</p>{% endif %}
+    <form method="post" action="/app/settings/password" class="stack" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Текущий пароль <input type="password" name="current_password" required maxlength="256" autocomplete="current-password"></label>
+      <label>Новый пароль <input type="password" name="new_password" required maxlength="256" autocomplete="new-password"></label>
+      <label>Новый пароль ещё раз <input type="password" name="new_password2" required maxlength="256" autocomplete="new-password"></label>
+      <button type="submit">Сменить пароль</button>
+    </form>
+
+    <h3>Двухфакторная аутентификация</h3>
+    <p>{% if totp_enabled %}Включена.{% else %}Выключена.{% endif %} <a href="/app/settings/2fa">Управление</a></p>
+
+    <h3 id="sessions">Активные устройства</h3>
+    <ul class="sessions">
+      {% for s in sessions %}
+      <li>
+        <div><strong>{{ s.ip }}</strong>{% if s.current %} <span class="badge">это устройство</span>{% endif %}</div>
+        <div class="muted">{{ s.ua }}</div>
+        <div class="muted">Последняя активность: <time datetime="{{ s.last_seen.isoformat() }}">{{ s.last_seen.strftime("%d.%m.%Y %H:%M") }} UTC</time></div>
+        {% if not s.current %}
+        <form method="post" action="/app/settings/sessions/{{ s.id }}/revoke">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Завершить</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="/app/settings/sessions/revoke-others">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Завершить все остальные сеансы</button>
+    </form>
+  </section>
+
+  <section id="spend">
+    <h2>Расход за текущий месяц</h2>
+    <p>${{ month_total }} из ${{ limit }}</p>
+    {% if breakdown %}
+    <table class="spend-table">
+      <thead><tr><th>Модель</th><th>Сумма</th></tr></thead>
+      <tbody>{% for model, amount in breakdown %}<tr><td>{{ model }}</td><td>${{ amount }}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% else %}<p class="muted">Расходов пока нет.</p>{% endif %}
+  </section>
+
+  <section id="data">
+    <h2>Данные</h2>
+    <p><a href="/app/settings/export" download>Скачать мои данные (JSON)</a></p>
+    {% if can_delete %}
+    <h3>Удаление аккаунта</h3>
+    <p>Чаты и сообщения будут удалены безвозвратно.</p>
+    {% if errors.delete %}<p class="error" role="alert">{{ errors.delete }}</p>{% endif %}
+    <form method="post" action="/app/settings/delete" class="stack" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Пароль <input type="password" name="password" required maxlength="256" autocomplete="current-password"></label>
+      <label class="check"><input type="checkbox" name="confirm" value="1" required> Я понимаю, что это необратимо</label>
+      <button type="submit" class="danger">Удалить аккаунт</button>
+    </form>
+    {% else %}
+    {% if errors.delete %}<p class="error" role="alert">{{ errors.delete }}</p>{% endif %}
+    <p class="muted">Аккаунт администратора удалить нельзя.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
