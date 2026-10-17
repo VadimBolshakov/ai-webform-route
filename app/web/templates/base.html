@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Заметки об искусственном интеллекте{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="site"><a class="title" href="/">Заметки об искусственном интеллекте</a></header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer class="site">{% block footer %}<span>Заметки об искусственном интеллекте</span>{% endblock %}</footer>
+</body>
+</html>

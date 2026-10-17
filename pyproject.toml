@@ -14,6 +14,7 @@ dependencies = [
     "argon2-cffi==23.1.0",
     "pyotp==2.9.0",
     "segno==1.6.1",
+    "python-multipart==0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -23,8 +24,12 @@ dev = [
     "httpx==0.28.1",
 ]
 
-[tool.setuptools]
-packages = ["app", "app.security"]
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.security" = ["breached.txt"]
+"app.web" = ["templates/**", "static/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,9 +1,18 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import Settings, get_settings
 from app.db import make_engine, make_sessionmaker
+from app.security.headers import OriginCheckMiddleware, SecurityHeadersMiddleware
+
+WEB_DIR = Path(__file__).parent / "web"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -21,8 +30,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sessionmaker = make_sessionmaker(engine)
     app.dependency_overrides[get_settings] = lambda: settings
 
+    # Последний добавленный — внешний: заголовки попадают и на 403 от проверки Origin.
+    app.add_middleware(OriginCheckMiddleware, base_url=settings.base_url)
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+    app.state.templates = templates
+    app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exc(request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404:
+            return templates.TemplateResponse(request, "notfound.html", status_code=404)
+        return await http_exception_handler(request, exc)
+
     @app.get("/healthz")
     async def healthz():
         return {"ok": True}
+
+    @app.get("/", response_class=HTMLResponse)
+    async def decoy(request: Request):
+        return templates.TemplateResponse(
+            request,
+            "decoy.html",
+            {"login_path_token": request.app.state.settings.login_path_token},
+        )
+
+    @app.get("/robots.txt", include_in_schema=False)
+    async def robots():
+        return FileResponse(WEB_DIR / "static" / "robots.txt", media_type="text/plain")
 
     return app
