@@ -8,9 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth.routes import router as auth_router
 from app.config import Settings, get_settings
 from app.db import make_engine, make_sessionmaker
-from app.security.headers import OriginCheckMiddleware, SecurityHeadersMiddleware
+from app.notify.base import LogNotifier
+from app.security.headers import OriginCheckMiddleware, SecurityHeadersMiddleware, is_private
+from app.security.ratelimit import SlidingWindowLimiter
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -28,6 +31,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.sessionmaker = make_sessionmaker(engine)
+    app.state.notifier = LogNotifier()
+    app.state.login_limiter = SlidingWindowLimiter(20, 600)
     app.dependency_overrides[get_settings] = lambda: settings
 
     # Последний добавленный — внешний: заголовки попадают и на 403 от проверки Origin.
@@ -42,7 +47,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def http_exc(request: Request, exc: StarletteHTTPException):
         if exc.status_code == 404:
             return templates.TemplateResponse(request, "notfound.html", status_code=404)
+        if exc.status_code == 405 and is_private(request.url.path):
+            # Не раскрываем существование приватных маршрутов.
+            return templates.TemplateResponse(request, "notfound.html", status_code=404)
         return await http_exception_handler(request, exc)
+
+    app.include_router(auth_router)
 
     @app.get("/healthz")
     async def healthz():

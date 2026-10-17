@@ -5,6 +5,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
 MIN_LENGTH = 10
+MAX_LENGTH = 256
 _hasher = PasswordHasher()
 
 
@@ -34,6 +35,8 @@ def validate_password(pw: str, username: str) -> list[str]:
     errors: list[str] = []
     if len(pw) < MIN_LENGTH:
         errors.append(f"Пароль должен быть не короче {MIN_LENGTH} символов.")
+    if len(pw) > MAX_LENGTH:
+        errors.append(f"Пароль не должен быть длиннее {MAX_LENGTH} символов.")
     if pw.lower() == username.lower():
         errors.append("Пароль не должен совпадать с логином.")
     if pw.lower() in _breached():

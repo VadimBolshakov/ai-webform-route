@@ -15,3 +15,8 @@ article h2 { font-size: 1.3rem; margin-top: 2rem; }
 footer.site { border-top: 1px solid #ddd; color: #777; font-size: 0.9rem; margin-top: 2rem; }
 a.dot { color: #777; text-decoration: none; padding: 0 0.4rem; }
 .notfound { text-align: center; padding-top: 4rem; }
+form.login { max-width: 22rem; margin: 3rem auto; display: grid; gap: 0.8rem; }
+form.login label { display: grid; gap: 0.25rem; }
+form.login input { padding: 0.5rem; font: inherit; }
+form.login button { padding: 0.55rem; font: inherit; cursor: pointer; }
+.error { color: #a00; margin: 0; }

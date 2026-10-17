@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Вход{% endblock %}
+{% block content %}
+<form method="post" action="/a/{{ token }}" class="login" autocomplete="off">
+  <h1>Вход</h1>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <label>Логин <input type="text" name="username" required maxlength="64" autocomplete="username" autofocus></label>
+  <label>Пароль <input type="password" name="password" required maxlength="1024" autocomplete="current-password"></label>
+  <button type="submit">Войти</button>
+</form>
+{% endblock %}

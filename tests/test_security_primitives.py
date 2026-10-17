@@ -90,3 +90,24 @@ def test_limiter_prunes_memory(monkeypatch):
     now[0] += 11
     lim.hit("a")
     assert len(lim._hits["a"]) == 1
+
+
+def test_limiter_drops_idle_keys(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("app.security.ratelimit.time.monotonic", lambda: now[0])
+    lim = SlidingWindowLimiter(limit=5, window_s=10)
+    for i in range(100):
+        lim.hit(f"ip{i}")
+    assert len(lim._hits) == 100
+    now[0] += 11
+    lim.hit("other")
+    assert set(lim._hits) == {"other"}
+    now[0] += 11
+    assert lim.hit("other") is True
+    assert len(lim._hits["other"]) == 1
+
+
+def test_password_too_long_rejected():
+    errs = validate_password("a-Very-Long-Pass1" * 20, "bob")
+    assert any("256" in e for e in errs)
+    assert not any("256" in e for e in validate_password("Correct-Horse-42x", "bob"))

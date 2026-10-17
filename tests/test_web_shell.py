@@ -72,6 +72,14 @@ async def test_private_paths_noindex(client):
     assert "x-robots-tag" not in r.headers
 
 
+async def test_private_prefix_is_exact(client):
+    for p in ("/application", "/apple", "/a", "/about"):
+        r = await client.get(p)
+        assert "x-robots-tag" not in r.headers
+    for p in ("/app", "/app/", "/a/x"):
+        assert (await client.get(p)).headers["x-robots-tag"] == "noindex, nofollow"
+
+
 async def test_robots_and_static(client):
     r = await client.get("/robots.txt")
     assert r.status_code == 200

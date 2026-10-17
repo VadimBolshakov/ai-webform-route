@@ -21,8 +21,8 @@ PRIVATE = [
 ]
 
 
-def _is_private(path: str) -> bool:
-    return path.startswith("/a/") or path.startswith("/app")
+def is_private(path: str) -> bool:
+    return path == "/app" or path.startswith("/app/") or path.startswith("/a/")
 
 
 class SecurityHeadersMiddleware:
@@ -33,7 +33,7 @@ class SecurityHeadersMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        extra = COMMON + (PRIVATE if _is_private(scope["path"]) else [])
+        extra = COMMON + (PRIVATE if is_private(scope["path"]) else [])
         names = {k for k, _ in extra}
 
         async def send_wrapped(message: Message) -> None:
