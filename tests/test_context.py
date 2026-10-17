@@ -84,3 +84,19 @@ def test_image_part_estimated_flat_1000():
     assert len(out) == 2  # history (10) doesn't fit
     out = build_messages(_user(), hist, parts, sys_tokens + 1000 + 10)
     assert len(out) == 3
+
+
+def test_context_overflow_message():
+    from app.chat.context import context_overflow
+
+    user = _user("ru")  # системный промпт 25 символов → 9 токенов
+    assert context_overflow(user, "x" * 300, 24000) is None
+    content = user_content("вопрос", [Attachment("big.txt", "text", text="a" * 90_000)])
+    msg = context_overflow(user, content, 24000)
+    assert msg == (
+        "Вложения слишком большие для контекста модели (≈31 тыс. токенов при лимите 24 тыс.). "
+        "Сократите файлы."
+    )
+    # ровно на границе — допустимо; системный промпт пользователя учитывается
+    assert context_overflow(user, "x" * (3 * (24000 - 9)), 24000) is None
+    assert context_overflow(_user("ru", "p" * 30), "x" * (3 * (24000 - 9)), 24000) is not None

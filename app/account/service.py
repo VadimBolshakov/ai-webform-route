@@ -13,7 +13,7 @@ from app.auth.sessions import utcnow
 from app.billing.service import month_start
 from app.chat.service import AUTO_MODEL
 from app.files.upload import clean_text
-from app.models import AuditLog, Chat, Message, Usage, User
+from app.models import AuditLog, AuthSession, Chat, Message, Usage, User
 from app.notify.base import LogNotifier, Notifier
 from app.security.passwords import MAX_LENGTH, verify_password
 
@@ -140,6 +140,14 @@ async def export_user_data(db: AsyncSession, user: User) -> dict:
     usage = (
         await db.execute(select(Usage).where(Usage.user_id == user.id).order_by(Usage.id))
     ).scalars()
+    sessions = (
+        await db.execute(
+            select(AuthSession).where(AuthSession.user_id == user.id).order_by(AuthSession.id)
+        )
+    ).scalars()
+    events = (
+        await db.execute(select(AuditLog).where(AuditLog.user_id == user.id).order_by(AuditLog.id))
+    ).scalars()
     return {
         "user": {
             "username": user.username,
@@ -164,6 +172,18 @@ async def export_user_data(db: AsyncSession, user: User) -> dict:
                 "created_at": _iso(u.created_at),
             }
             for u in usage
+        ],
+        "sessions": [
+            {
+                "ip": s.ip,
+                "user_agent": s.user_agent,
+                "created_at": _iso(s.created_at),
+                "last_seen": _iso(s.last_seen),
+            }
+            for s in sessions
+        ],
+        "audit": [
+            {"event": a.event, "created_at": _iso(a.created_at), "ip": a.ip} for a in events
         ],
     }
 
@@ -197,7 +217,7 @@ async def delete_account(
     username = user.username
     label = deleted_label(uid)
     await db.execute(update(Usage).where(Usage.user_id == uid).values(user_label=label))
-    # Строки по user_id и «осиротевшие» (без user_id, но с именем): метка и имя в details.
+    # Строки по user_id и «осиротевшие» (без user_id, но с именем): метка, имя в details, IP.
     no_name = AuditLog.details.op("-")("username")
     await db.execute(
         update(AuditLog)
@@ -205,9 +225,10 @@ async def delete_account(
             (AuditLog.user_id == uid)
             | (AuditLog.user_id.is_(None) & (AuditLog.user_label == username))
         )
-        .values(user_label=label, details=no_name)
+        .values(user_label=label, details=no_name, ip="")
     )
-    db.add(AuditLog(event="account_deleted", user_id=uid, user_label=label, ip=ip[:45], details={}))
+    # IP — персональные данные: у записей удалённого аккаунта не хранится (колонка NOT NULL → "").
+    db.add(AuditLog(event="account_deleted", user_id=uid, user_label=label, ip="", details={}))
     await db.flush()
     await db.execute(delete(User).where(User.id == uid))  # каскад: сессии, чаты, сообщения
     db.expunge(user)

@@ -20,7 +20,7 @@ BACKFILL_BATCH = 50
 
 
 async def cleanup_expired(factory) -> dict[str, int]:
-    """Чистит просроченные сессии, давно просроченные инвайты и анонимные login_fail."""
+    """Чистит просроченные сессии, давно просроченные инвайты, анонимные login_fail и limit_reached."""
     now = utcnow()
     async with factory() as db:
         sessions = await db.execute(delete(AuthSession).where(AuthSession.expires_at < now))
@@ -32,11 +32,19 @@ async def cleanup_expired(factory) -> dict[str, int]:
                 AuditLog.created_at < now - LOGIN_FAIL_RETENTION,
             )
         )
+        limits = await db.execute(
+            delete(AuditLog).where(
+                AuditLog.event == "limit_reached",
+                AuditLog.user_id.is_(None),
+                AuditLog.created_at < now - LOGIN_FAIL_RETENTION,
+            )
+        )
         await db.commit()
     return {
         "sessions": sessions.rowcount,
         "invites": invites.rowcount,
         "login_fail": fails.rowcount,
+        "limit_reached": limits.rowcount,
     }
 
 

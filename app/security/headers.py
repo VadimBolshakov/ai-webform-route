@@ -45,11 +45,25 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_wrapped)
 
 
+DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
 def _origin(value: str) -> str | None:
-    parts = urlsplit(value)
-    if not parts.scheme or not parts.netloc:
+    """scheme://host[:port] в нижнем регистре; порт по умолчанию для схемы опускается."""
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
         return None
-    return f"{parts.scheme}://{parts.netloc}".lower()
+    if not parts.scheme or not parts.hostname:
+        return None
+    scheme = parts.scheme.lower()
+    host = parts.hostname  # urlsplit уже приводит к нижнему регистру
+    if ":" in host:
+        host = f"[{host}]"
+    if port is None or DEFAULT_PORTS.get(scheme) == port:
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
 
 
 class OriginCheckMiddleware:

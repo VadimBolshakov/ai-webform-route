@@ -351,3 +351,14 @@ async def test_mid_stream_429_maps(make_client):
     with pytest.raises(LLMError) as ei:
         await collect(make_client())
     assert ei.value.user_message == "Модель перегружена, попробуйте позже"
+
+
+@respx.mock
+async def test_stream_sends_max_output_tokens(make_client, settings):
+    assert settings.max_output_tokens == 4096
+    body = sse(chunk("x"), chunk(None, "stop", USAGE))
+    route = respx.post(f"{BASE}/chat/completions").respond(200, content=body)
+    await collect(make_client())
+    assert json.loads(route.calls.last.request.content)["max_tokens"] == 4096
+    await collect(make_client(max_output_tokens=1000))
+    assert json.loads(route.calls.last.request.content)["max_tokens"] == 1000

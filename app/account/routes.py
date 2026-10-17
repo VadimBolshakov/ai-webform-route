@@ -126,9 +126,16 @@ async def twofa_enable(
     if len(code) > MAX_CODE or not await consume_totp(db, user, code, request.app.state.settings.fernet_key):
         return await _page(request, db, ctx, user, "Неверный код", 400)
     user.totp_enabled = True
-    await audit(db, "totp_enabled", user, client_ip(request))
+    ip = client_ip(request)
+    # Остальные сессии могли быть открыты без второго фактора — отзываем; текущей — новый ID.
+    await revoke_all(db, user.id, except_id=ctx.session.id)
+    raw, _ = await create_session(db, user, ip, request.headers.get("user-agent", ""))
+    await revoke(db, ctx.session)
+    await audit(db, "totp_enabled", user, ip)
     await db.commit()
-    return RedirectResponse("/app/settings/2fa", status_code=303)
+    resp = RedirectResponse("/app/settings/2fa", status_code=303)
+    set_session_cookie(resp, raw, request.app.state.settings)
+    return resp
 
 
 @router.post("/2fa/disable")

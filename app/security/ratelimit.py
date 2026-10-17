@@ -9,6 +9,7 @@ class SlidingWindowLimiter:
         self.limit = limit
         self.window_s = window_s
         self._hits: dict[str, deque[float]] = {}
+        self._denied: dict[str, float] = {}  # ключ → время отказа, о котором уже сообщили
         self._last_sweep = time.monotonic()
 
     def _prune(self, q: deque[float], cutoff: float) -> None:
@@ -26,6 +27,17 @@ class SlidingWindowLimiter:
             self._prune(q, cutoff)
             if not q:
                 del self._hits[key]
+        for key in [k for k, t in self._denied.items() if t <= cutoff]:
+            del self._denied[key]
+
+    def first_denial(self, key: str) -> bool:
+        """True для первого отказа по ключу за окно — чтобы не писать аудит на каждый."""
+        now = time.monotonic()
+        last = self._denied.get(key)
+        if last is not None and now - last < self.window_s:
+            return False
+        self._denied[key] = now
+        return True
 
     def hit(self, key: str) -> bool:
         now = time.monotonic()

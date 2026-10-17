@@ -159,7 +159,9 @@ class OpenRouterClient:
     async def stream_chat(
         self, model: str, messages: list[dict]
     ) -> AsyncIterator[StreamDelta | StreamDone]:
-        payload = self._payload(model, messages, stream=True)
+        payload = self._payload(
+            model, messages, stream=True, max_tokens=self._settings.max_output_tokens
+        )
         state: dict = {}
         usage: dict | None = None
         finished = False

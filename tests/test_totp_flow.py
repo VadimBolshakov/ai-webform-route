@@ -71,7 +71,8 @@ async def test_totp_wrong_code_5_times_revokes(client, db, settings):
     r = await submit(client, db, "000000")
     assert r.status_code == 303 and r.headers["location"] == LOGIN
     assert (await db.scalar(select(func.count()).select_from(AuthSession))) == 0
-    assert (await client.get(TOTP)).status_code == 404
+    r = await client.get(TOTP)
+    assert r.status_code == 303 and r.headers["location"] == LOGIN
     ev = (await db.execute(select(AuditLog.event))).scalars().all()
     assert "login_fail" in ev
 
@@ -154,12 +155,26 @@ async def test_enable_totp_flow(client, db, settings):
     bad = await client.post("/app/settings/2fa/enable", data={"code": "000000", "csrf_token": token})
     assert bad.status_code == 400
     assert (await client.post("/app/settings/2fa/enable", data={"code": "1"})).status_code == 403
+    from app.auth.sessions import create_session
+
+    await create_session(db, u, "9.9.9.9", "Other device")
+    await db.commit()
+    old_sid = client.cookies[COOKIE_NAME]
+    old_ids = set((await db.execute(select(AuthSession.id))).scalars().all())
     code = pyotp.TOTP(secret).now()
     r = await client.post("/app/settings/2fa/enable", data={"code": code, "csrf_token": token})
     assert r.status_code == 303
     await db.refresh(u)
     assert u.totp_enabled is True and u.totp_last_step is not None
     assert "totp_enabled" in (await db.execute(select(AuditLog.event))).scalars().all()
+    # Ротация ID текущей сессии и отзыв остальных.
+    assert client.cookies[COOKIE_NAME] != old_sid
+    rows = (await db.execute(select(AuthSession))).scalars().all()
+    assert len(rows) == 1 and rows[0].id not in old_ids and rows[0].totp_pending is False
+    assert (await client.get("/app/probe")).status_code == 200
+    new_token = await csrf(db)
+    assert new_token != token and new_token == rows[0].csrf_token
+    token = new_token
     # Тот же код повторно (для disable) отвергается как повтор.
     r = await client.post(
         "/app/settings/2fa/disable",
@@ -254,3 +269,29 @@ async def test_disable_refused_while_locked(client, db, settings):
     assert r.status_code == 400
     await db.refresh(u)
     assert u.totp_enabled is True
+
+
+async def test_totp_page_without_pending_session_redirects_to_login(client, db, settings):
+    ref = await client.get("/nonexistent")
+    r = await client.get(TOTP)  # нет cookie
+    assert r.status_code == 303 and r.headers["location"] == LOGIN
+    r = await client.post(TOTP, data={"code": "123456"})
+    assert r.status_code == 303 and r.headers["location"] == LOGIN
+    # неверный токен входа — по-прежнему нейтральный 404
+    r = await client.get("/a/wrong-token/totp")
+    assert r.status_code == 404 and r.content == ref.content
+
+
+async def test_expired_pending_session_redirects_and_clears_cookie(client, db, settings):
+    from datetime import timedelta
+
+    from app.auth.sessions import utcnow
+
+    await totp_user(db, settings)
+    await login(client)
+    s = (await db.execute(select(AuthSession))).scalar_one()
+    s.expires_at = utcnow() - timedelta(seconds=1)
+    await db.commit()
+    r = await client.get(TOTP)
+    assert r.status_code == 303 and r.headers["location"] == LOGIN
+    assert COOKIE_NAME in r.headers["set-cookie"] and "max-age=0" in r.headers["set-cookie"].lower()

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import AuthContext, current_auth
 from app.billing.service import LimitExceeded, check_limit, month_spend
-from app.chat.context import build_messages, history_content, user_content
+from app.chat.context import build_messages, context_overflow, history_content, user_content
 from app.chat.service import (
     DEFAULT_TITLE,
     SessionFactory,
@@ -166,6 +166,11 @@ async def send_message(
     if not supports_images and any(a.kind == "image" for a in attachments):
         return error_response(MSG_NO_IMAGES)
 
+    content = user_content(text, attachments)
+    overflow = context_overflow(user, content, request.app.state.settings.context_token_budget)
+    if overflow is not None:
+        return error_response(overflow)
+
     history = await chat_messages(db, chat.id)
     stored = [
         {"name": a.name, "kind": "text", "text": a.text}
@@ -178,7 +183,7 @@ async def send_message(
     title_text = text.strip() or ", ".join(a.name for a in attachments)
     return await _start(
         request, db, user, chat, llm, factory,
-        model=model, history=history, content=user_content(text, attachments),
+        model=model, history=history, content=content,
         first_user_text=title_text,
     )
 
@@ -208,11 +213,16 @@ async def retry(
         await db.rollback()
         return error_response(MSG_NOTHING_TO_RETRY)
     last = msgs.pop()
+    content = history_content(last)
+    overflow = context_overflow(user, content, request.app.state.settings.context_token_budget)
+    if overflow is not None:
+        await db.rollback()
+        return error_response(overflow)
     await db.commit()
     # Изображения не хранятся — при повторе модель получает только «[изображение: имя]».
     return await _start(
         request, db, user, chat, llm, factory,
-        model=model, history=msgs, content=history_content(last),
+        model=model, history=msgs, content=content,
         first_user_text=last.content,
     )
 

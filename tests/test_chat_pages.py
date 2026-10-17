@@ -273,7 +273,7 @@ async def test_rename_rejects_non_urlencoded_and_large_body(client, db):
     chat = await make_chat(db, u, "мой")
     h = {"X-CSRF-Token": csrf}
     r = await client.post(f"/app/chats/{chat.id}/rename", files={"title": (None, "x")}, headers=h)
-    assert r.status_code == 415
+    assert r.status_code == 404  # multipart отсекает BodyLimitMiddleware (нейтральный 404)
     r = await client.post(
         f"/app/chats/{chat.id}/rename", data={"title": "x" * 20_000}, headers=h
     )

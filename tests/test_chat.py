@@ -681,3 +681,34 @@ async def test_interrupted_reply_control_chars_stripped(app, client, db):
     await send(client, chat.id, csrf)
     [_, reply] = await messages(db, chat.id)
     assert reply.content == "часть" and reply.interrupted
+
+
+async def test_oversized_context_rejected_before_model(app, client, db):
+    llm = use_llm(app)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    files = [("files", (f"f{i}.txt", b"a" * 30_000)) for i in range(3)]  # ≈30 тыс. токенов
+    r = await send(client, chat.id, csrf, text="вопрос", files=files)
+    [(name, data)] = events(r.text)
+    assert name == "error" and data == {
+        "message": "Вложения слишком большие для контекста модели (≈31 тыс. токенов при лимите "
+        "24 тыс.). Сократите файлы."
+    }
+    assert llm.calls == [] and await messages(db, chat.id) == []
+
+
+async def test_oversized_context_rejected_on_retry(app, client, db, monkeypatch):
+    llm = use_llm(app)
+    u, csrf = await signed_in(client, db)
+    chat = await make_chat(db, u, title="t")
+    db.add(Message(chat_id=chat.id, role="user", content="x" * 30_000))
+    await db.commit()
+    db.add(Message(chat_id=chat.id, role="assistant", content="old answer"))
+    await db.commit()
+    cid = chat.id
+    monkeypatch.setattr(app.state.settings, "context_token_budget", 5000)
+    r = await client.post(f"/app/chats/{cid}/retry", headers={"X-CSRF-Token": csrf})
+    [(name, data)] = events(r.text)
+    assert name == "error" and "лимите 5 тыс." in data["message"] and "retry" not in data
+    assert llm.calls == []
+    assert [m.role for m in await messages(db, cid)] == ["user", "assistant"]  # ответ не удалён

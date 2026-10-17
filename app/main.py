@@ -9,7 +9,7 @@ from fastapi.exception_handlers import (
     request_validation_exception_handler,
 )
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -24,6 +24,7 @@ from app.db import make_engine, make_sessionmaker
 from app.jobs import make_scheduler
 from app.llm.openrouter import OpenRouterClient
 from app.notify.base import LogNotifier
+from app.security.body_limit import BodyLimitMiddleware
 from app.security.headers import OriginCheckMiddleware, SecurityHeadersMiddleware, is_private
 from app.security.ratelimit import SlidingWindowLimiter
 
@@ -72,12 +73,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm = OpenRouterClient(settings, http, _AppNotifier(app))
     app.dependency_overrides[get_settings] = lambda: settings
 
-    # Последний добавленный — внешний: заголовки попадают и на 403 от проверки Origin.
-    app.add_middleware(OriginCheckMiddleware, base_url=settings.base_url)
-    app.add_middleware(SecurityHeadersMiddleware)
-
     templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
     app.state.templates = templates
+
+    def not_found(scope) -> Response:
+        return templates.TemplateResponse(Request(scope), "notfound.html", status_code=404)
+
+    # Последний добавленный — внешний: заголовки попадают и на 403/404/413 от проверок ниже;
+    # лимит тела срабатывает до любого разбора формы.
+    app.add_middleware(OriginCheckMiddleware, base_url=settings.base_url)
+    app.add_middleware(BodyLimitMiddleware, not_found=not_found)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
     @app.exception_handler(RequestValidationError)

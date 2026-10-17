@@ -395,3 +395,26 @@ async def test_lock_persists_when_notifier_raises(client, db, app):
     u = (await db.execute(select(User))).scalar_one()
     assert u.failed_logins == 5 and u.locked_until is not None
     assert (await login(client)).status_code == 401
+
+
+async def test_ip_rate_limit_audited_once_per_window(client, db, app):
+    for _ in range(25):
+        await login(client, "nobody", "bad-bad-bad-bad")
+    rows = (
+        await db.execute(select(AuditLog).where(AuditLog.event == "limit_reached"))
+    ).scalars().all()
+    assert len(rows) == 1 and rows[0].user_id is None and rows[0].details == {"scope": "login"}
+
+
+def test_limiter_first_denial_once_per_window(monkeypatch):
+    from app.security import ratelimit
+
+    now = [1000.0]
+    monkeypatch.setattr(ratelimit.time, "monotonic", lambda: now[0])
+    lim = ratelimit.SlidingWindowLimiter(1, 60)
+    assert lim.hit("ip") and not lim.hit("ip")
+    assert lim.first_denial("ip") is True
+    assert lim.first_denial("ip") is False
+    assert lim.first_denial("other") is True
+    now[0] += 61
+    assert lim.first_denial("ip") is True

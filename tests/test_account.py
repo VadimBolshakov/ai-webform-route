@@ -297,3 +297,50 @@ async def test_delete_removes_username_from_audit(client, db):
         assert a.user_label != "alice"
         assert "alice" not in a.details.values()
         assert "username" not in a.details
+
+
+async def test_delete_blanks_ip_on_audit_rows(client, db):
+    u, csrf = await signed_in(client, db)
+    bob = await make_user(db, "bob")
+    db.add_all([
+        AuditLog(event="login_ok", user_id=u.id, user_label="alice", ip="5.5.5.5"),
+        AuditLog(event="login_fail", user_id=None, user_label="alice", ip="6.6.6.6",
+                 details={"username": "alice"}),
+        AuditLog(event="login_ok", user_id=bob.id, user_label="bob", ip="7.7.7.7"),
+        AuditLog(event="login_fail", user_id=None, user_label="carol", ip="8.8.8.8"),
+    ])
+    await db.commit()
+    r = await post(client, "/delete", csrf, password=PASSWORD, confirm="1")
+    assert r.status_code == 303
+    db.expunge_all()
+    rows = (await db.execute(select(AuditLog.user_label, AuditLog.ip))).all()
+    by_label: dict[str, set[str]] = {}
+    for label, ip in rows:
+        by_label.setdefault(label, set()).add(ip)
+    assert by_label[f"deleted-user-{u.id}"] == {""}  # включая саму запись account_deleted
+    assert by_label["bob"] == {"7.7.7.7"} and by_label["carol"] == {"8.8.8.8"}
+
+
+async def test_export_includes_sessions_and_own_audit(client, db):
+    u, _ = await signed_in(client, db)
+    bob = await make_user(db, "bob")
+    await create_session(db, u, "2.2.2.2", "Second device")
+    await create_session(db, bob, "3.3.3.3", "Bob device")
+    db.add_all([
+        AuditLog(event="password_changed", user_id=u.id, user_label="alice", ip="4.4.4.4",
+                 details={"secret": "x"}),
+        AuditLog(event="login_ok", user_id=bob.id, user_label="bob", ip="3.3.3.3"),
+    ])
+    await db.commit()
+    data = json.loads((await client.get(S + "/export")).text)
+    assert "3.3.3.3" not in json.dumps(data)
+    sessions = data["sessions"]
+    assert {s["ip"] for s in sessions} == {"2.2.2.2", "127.0.0.1"}
+    assert all(set(s) == {"ip", "user_agent", "created_at", "last_seen"} for s in sessions)
+    assert "Second device" in {s["user_agent"] for s in sessions}
+    audit = data["audit"]
+    assert all(set(a) == {"event", "created_at", "ip"} for a in audit)
+    assert {"event": "password_changed", "ip": "4.4.4.4"} in [
+        {"event": a["event"], "ip": a["ip"]} for a in audit
+    ]
+    assert "login_ok" in {a["event"] for a in audit}  # собственный вход при signed_in

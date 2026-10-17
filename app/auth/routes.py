@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import AuthContext, current_auth
+from app.auth.deps import AuthContext, current_auth, optional_auth
 from app.auth.invites import InviteError, InviteInvalid, get_valid_invite, redeem_invite
 from app.auth.service import (
     LOCK_THRESHOLD,
@@ -69,9 +69,11 @@ async def login_submit(
     ip = client_ip(request)
     if len(username) > MAX_FIELD or len(password) > MAX_FIELD:
         username, password = "", ""  # заведомо неверно; не логируем и не хешируем огромный ввод
-    if not request.app.state.login_limiter.hit(ip):
-        await audit(db, "limit_reached", None, ip, scope="login")
-        await db.commit()
+    limiter = request.app.state.login_limiter
+    if not limiter.hit(ip):
+        if limiter.first_denial(ip):  # одна запись на IP за окно, не на каждую попытку
+            await audit(db, "limit_reached", None, ip, scope="login")
+            await db.commit()
         return _form(request, token, GENERIC_ERROR, 429)
 
     user = await authenticate(db, username, password, ip, notifier)
@@ -120,9 +122,15 @@ def _drop_session_redirect(token: str):
     return resp
 
 
+# Без действующей промежуточной сессии (истекли 10 минут, отозвана) — назад ко входу,
+# а не голый 404: токен входа верный, скрывать нечего.
 @router.get("/a/{token}/totp")
-async def totp_form(request: Request, token: str, ctx: AuthContext = Depends(current_auth)):
+async def totp_form(
+    request: Request, token: str, ctx: AuthContext | None = Depends(optional_auth)
+):
     _check_token(request, token)
+    if ctx is None:
+        return _drop_session_redirect(token)
     if not ctx.session.totp_pending:
         raise HTTPException(status_code=404)
     return _totp_form(request, ctx, token)
@@ -133,11 +141,13 @@ async def totp_submit(
     request: Request,
     token: str,
     code: str = Form(""),
-    ctx: AuthContext = Depends(current_auth),
+    ctx: AuthContext | None = Depends(optional_auth),
     db: AsyncSession = Depends(get_db),
     notifier: Notifier = Depends(get_notifier),
 ):
     _check_token(request, token)
+    if ctx is None:
+        return _drop_session_redirect(token)
     if not ctx.session.totp_pending:
         raise HTTPException(status_code=404)
     await require_csrf(request, ctx.session)

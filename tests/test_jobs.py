@@ -37,14 +37,17 @@ async def test_cleanup_expired(db):
         AuditLog(event="login_fail", user_id=None, details={}, created_at=now),  # свежая
         AuditLog(event="login_fail", user_id=u.id, user_label="alice", details={}, created_at=long_ago),
         AuditLog(event="user_blocked", user_id=None, details={}, created_at=long_ago),
+        AuditLog(event="limit_reached", user_id=None, details={"scope": "login"}, created_at=long_ago),  # удалить
+        AuditLog(event="limit_reached", user_id=None, details={"scope": "login"}, created_at=now),
+        AuditLog(event="limit_reached", user_id=u.id, details={}, created_at=long_ago),  # месячный лимит
     ])
     await db.commit()
     res = await cleanup_expired(shared(db))
-    assert res == {"sessions": 1, "invites": 1, "login_fail": 1}
+    assert res == {"sessions": 1, "invites": 1, "login_fail": 1, "limit_reached": 1}
     assert (await db.execute(select(AuthSession.id))).scalars().all() == [fresh.id]
     assert sorted((await db.execute(select(Invite.token_hash))).scalars().all()) == ["b" * 64, "c" * 64]
     left = (await db.execute(select(AuditLog.event, AuditLog.user_id))).all()
-    assert len(left) == 3
+    assert len(left) == 5
 
 
 class FakeCostLLM:

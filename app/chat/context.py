@@ -52,13 +52,28 @@ def _estimate_content(content: str | list[dict]) -> int:
     return total
 
 
-def build_messages(
-    user: User, history: list[Message], new_user_content: list[dict] | str, budget: int
-) -> list[dict]:
+def system_prompt(user: User) -> str:
     system = _SYSTEM.get(user.answer_language, _SYSTEM["ru"])
     if user.system_prompt:
         system += "\n\n" + user.system_prompt
+    return system
 
+
+def context_overflow(user: User, new_user_content: list[dict] | str, budget: int) -> str | None:
+    """Ошибка для пользователя, если системный промпт + новое сообщение не влезают в бюджет."""
+    used = estimate_tokens(system_prompt(user)) + _estimate_content(new_user_content)
+    if used <= budget:
+        return None
+    return (
+        f"Вложения слишком большие для контекста модели (≈{math.ceil(used / 1000)} тыс. "
+        f"токенов при лимите {budget / 1000:g} тыс.). Сократите файлы."
+    )
+
+
+def build_messages(
+    user: User, history: list[Message], new_user_content: list[dict] | str, budget: int
+) -> list[dict]:
+    system = system_prompt(user)
     used = estimate_tokens(system) + _estimate_content(new_user_content)
     kept: list[dict] = []
     for msg in reversed(history):

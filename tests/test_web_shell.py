@@ -106,3 +106,69 @@ async def test_require_csrf():
         with pytest.raises(HTTPException) as e:
             await require_csrf(req, _Sess())
         assert e.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com",  # http только для localhost
+        "https://example.com/app",  # без пути
+        "https://example.com?x=1",
+        "https://example.com#f",
+        "ftp://example.com",
+        "example.com",
+        "https://",
+    ],
+)
+def test_base_url_rejected(settings, url):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(**{**settings.model_dump(), "base_url": url}, _env_file=None)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://example.com", "https://example.com/", "http://localhost:8000", "http://127.0.0.1:8000"],
+)
+def test_base_url_accepted(settings, url):
+    from app.config import Settings
+
+    assert Settings(**{**settings.model_dump(), "base_url": url}, _env_file=None).base_url
+
+
+def test_origin_default_ports_normalised():
+    from app.security.headers import _origin
+
+    assert _origin("https://Host.example:443") == _origin("https://host.example")
+    assert _origin("http://localhost:80/x") == "http://localhost"
+    assert _origin("https://host.example:8443") == "https://host.example:8443"
+    assert _origin("http://host.example:443") == "http://host.example:443"
+
+
+async def test_origin_with_explicit_default_port_allowed(settings):
+    from app.config import Settings
+    from app.main import create_app
+
+    s = Settings(**{**settings.model_dump(), "base_url": "https://chat.example"}, _env_file=None)
+    application = create_app(s)
+    async with AsyncClient(transport=ASGITransport(app=application), base_url=s.base_url) as c:
+        r = await c.post("/healthz", headers={"Origin": "https://chat.example:443"})
+        assert r.status_code == 405  # прошло проверку Origin, маршрут только GET
+        r = await c.post("/healthz", headers={"Origin": "https://chat.example:444"})
+        assert r.status_code == 403
+    await application.state.engine.dispose()
+
+
+def test_title_model_default_and_not_empty(settings, monkeypatch):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    base = {k: v for k, v in settings.model_dump().items() if k != "title_model"}
+    with pytest.raises(ValidationError):
+        Settings(**base, title_model="", _env_file=None)
+    monkeypatch.setenv("TITLE_MODEL", "")  # пустая строка в .env → значение по умолчанию
+    assert Settings(**base, _env_file=None).title_model == "openai/gpt-4o-mini"

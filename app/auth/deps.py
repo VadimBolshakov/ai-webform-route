@@ -39,6 +39,18 @@ async def current_auth(request: Request, db: AsyncSession = Depends(get_db)) -> 
     return AuthContext(user=user, session=s)
 
 
+async def optional_auth(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> AuthContext | None:
+    """Как current_auth, но вместо нейтрального 404 (нет/просрочена сессия) — None."""
+    try:
+        return await current_auth(request, db)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return None
+        raise
+
+
 async def current_user(ctx: AuthContext = Depends(current_auth)) -> User:
     return ctx.user
 
