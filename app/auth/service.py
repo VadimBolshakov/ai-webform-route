@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from app.security.passwords import (
     verify_password,
 )
 
+logger = logging.getLogger(__name__)
 LOCK_THRESHOLD = 5
 _DUMMY_HASH = hash_password("dummy-password-for-timing")
 
@@ -60,9 +62,12 @@ async def authenticate(
         if user.failed_logins >= LOCK_THRESHOLD:
             minutes = min(2 ** (user.failed_logins - LOCK_THRESHOLD), 60)
             user.locked_until = now + timedelta(minutes=minutes)
-        await db.flush()
+        await db.commit()  # счётчик и блокировка сохраняются до любых побочных эффектов
         if user.failed_logins == LOCK_THRESHOLD and notifier is not None:
-            await notifier.alert(f"Серия неудачных входов: {user.username}, IP {ip}")
+            try:
+                await notifier.alert(f"Серия неудачных входов: {user.username}, IP {ip}")
+            except Exception:
+                logger.exception("notifier.alert failed")
         return None
 
     user.failed_logins = 0

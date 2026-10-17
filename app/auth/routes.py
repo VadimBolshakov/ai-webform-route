@@ -43,13 +43,15 @@ async def login_form(request: Request, token: str):
 async def login_submit(
     request: Request,
     token: str,
-    username: str = Form("", max_length=MAX_FIELD),
-    password: str = Form("", max_length=MAX_FIELD),
+    username: str = Form(""),
+    password: str = Form(""),
     db: AsyncSession = Depends(get_db),
     notifier: Notifier = Depends(get_notifier),
 ):
     _check_token(request, token)
     ip = client_ip(request)
+    if len(username) > MAX_FIELD or len(password) > MAX_FIELD:
+        username, password = "", ""  # заведомо неверно; не логируем и не хешируем огромный ввод
     if not request.app.state.login_limiter.hit(ip):
         await audit(db, "limit_reached", None, ip, scope="login")
         await db.commit()

@@ -320,3 +320,78 @@ async def test_create_admin(db):
         await create_admin(db, "other", "short")
     events = (await db.execute(select(AuditLog.event))).scalars().all()
     assert events == ["admin_created"]
+
+
+async def test_touch_commits_when_extending(db, monkeypatch):
+    u = await make_user(db)
+    _, s = await create_session(db, u, "1.2.3.4", "ua")
+    s.last_seen = datetime.now(timezone.utc) - timedelta(minutes=11)
+    calls = []
+    real = db.commit
+
+    async def spy():
+        calls.append(1)
+        await real()
+
+    monkeypatch.setattr(db, "commit", spy)
+    await touch(db, s)
+    assert calls == [1]
+    await touch(db, s)  # слишком рано - без записи
+    assert calls == [1]
+
+
+async def test_sliding_expiry_persisted_on_read_request(app, client, db):
+    @app.get("/app/probe")
+    async def probe(user: User = Depends(current_user)):
+        return {"ok": True}
+
+    await _session_cookie(client, db)
+    s = (await db.execute(select(AuthSession))).scalar_one()
+    s.last_seen = datetime.now(timezone.utc) - timedelta(minutes=30)
+    s.expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+    await db.commit()
+    sid = s.id
+    assert (await client.get("/app/probe")).status_code == 200
+    await db.rollback()  # то, что не закоммичено, пропадает
+    db.expunge_all()
+    fresh = await db.get(AuthSession, sid)
+    assert fresh.expires_at > datetime.now(timezone.utc) + timedelta(days=6)
+
+
+async def test_overlong_fields_wrong_token_is_neutral_404(client):
+    ref = await client.get("/nonexistent")
+    r = await client.post("/a/wrong-token", data={"username": "u" * 1025, "password": "p"})
+    assert r.status_code == 404 and r.content == ref.content
+
+
+async def test_overlong_username_valid_token_generic_error_no_echo(client, db):
+    await make_user(db)
+    r = await login(client, username="u" * 1025, password="secret-pass-echo")
+    assert r.status_code == 401 and "Неверный логин или пароль" in r.text
+    assert "uuuu" not in r.text and "secret-pass-echo" not in r.text
+
+
+async def test_validation_error_on_private_path_is_neutral_404(app, client):
+    @app.get("/app/needs-int")
+    async def needs_int(n: int):
+        return {"n": n}
+
+    ref = await client.get("/nonexistent")
+    r = await client.get("/app/needs-int?n=abc")
+    assert r.status_code == 404 and r.content == ref.content
+
+
+async def test_lock_persists_when_notifier_raises(client, db, app):
+    class Boom:
+        async def alert(self, text: str) -> None:
+            raise RuntimeError("down")
+
+    app.state.notifier = Boom()
+    await make_user(db)
+    for _ in range(5):
+        r = await login(client, password="bad-bad-bad-bad")
+        assert r.status_code == 401
+    await db.rollback()
+    u = (await db.execute(select(User))).scalar_one()
+    assert u.failed_logins == 5 and u.locked_until is not None
+    assert (await login(client)).status_code == 401

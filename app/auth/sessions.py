@@ -55,7 +55,7 @@ async def touch(db: AsyncSession, s: AuthSession) -> None:
         return
     s.last_seen = now
     s.expires_at = now + SESSION_TTL
-    await db.flush()
+    await db.commit()  # иначе скользящий срок откатится на запросах без записи
 
 
 async def revoke(db: AsyncSession, s: AuthSession) -> None:

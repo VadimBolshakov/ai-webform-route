@@ -2,7 +2,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import http_exception_handler
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -42,6 +46,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
     app.state.templates = templates
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exc(request: Request, exc: RequestValidationError):
+        if is_private(request.url.path):
+            # Никакого 422 с эхом ввода на приватных путях.
+            return templates.TemplateResponse(request, "notfound.html", status_code=404)
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exc(request: Request, exc: StarletteHTTPException):
