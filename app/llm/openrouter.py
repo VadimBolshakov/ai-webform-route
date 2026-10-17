@@ -5,9 +5,10 @@ Never logs or raises with the API key, request bodies or message contents.
 
 import json
 import logging
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -20,11 +21,13 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 MSG_UNAVAILABLE = "Сервис временно недоступен"
 MSG_OVERLOADED = "Модель перегружена, попробуйте позже"
 MSG_MODEL_ERROR = "Ошибка модели, попробуйте ещё раз"
+ALERT_INTERVAL_S = 30 * 60
 
 
 @dataclass
 class StreamDelta:
     text: str
+    generation_id: str | None = None
 
 
 @dataclass
@@ -33,16 +36,23 @@ class StreamDone:
     generation_id: str
     prompt_tokens: int
     completion_tokens: int
-    cost_usd: Decimal
+    cost_usd: Decimal | None  # None = unknown (not reported); 0 = explicitly free
     finish_reason: str
 
 
 class LLMError(Exception):
-    def __init__(self, status: int | None, user_message: str, detail: str = ""):
+    def __init__(
+        self,
+        status: int | None,
+        user_message: str,
+        detail: str = "",
+        generation_id: str | None = None,
+    ):
         super().__init__(user_message)
         self.status = status
         self.user_message = user_message
         self.detail = detail  # provider message only; for logs
+        self.generation_id = generation_id
 
 
 def _provider_message(data) -> str:
@@ -55,6 +65,21 @@ def _provider_message(data) -> str:
     return ""
 
 
+def _parse_cost(usage: dict) -> Decimal | None:
+    raw = usage.get("cost")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        cost = Decimal(str(raw))
+    except InvalidOperation:
+        logger.warning("openrouter: non-numeric usage.cost")
+        return None
+    if not cost.is_finite():
+        logger.warning("openrouter: non-finite usage.cost")
+        return None
+    return cost
+
+
 def _usage_done(chunk_state: dict, usage: dict | None) -> StreamDone:
     usage = usage or {}
     return StreamDone(
@@ -62,13 +87,21 @@ def _usage_done(chunk_state: dict, usage: dict | None) -> StreamDone:
         generation_id=chunk_state.get("id", ""),
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
-        cost_usd=Decimal(str(usage.get("cost") or 0)),
+        cost_usd=_parse_cost(usage),
         finish_reason=chunk_state.get("finish_reason") or "",
     )
 
 
 class OpenRouterClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, notifier: Notifier):
+    def __init__(
+        self,
+        settings: Settings,
+        http: httpx.AsyncClient,
+        notifier: Notifier,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._clock = clock
+        self._last_alert: float | None = None
         self._settings = settings
         self._http = http
         self._notifier = notifier
@@ -97,6 +130,13 @@ class OpenRouterClient:
         except Exception:
             logger.exception("failed to send alert")
 
+    async def _key_alert(self, code: int) -> None:
+        now = self._clock()
+        if self._last_alert is not None and now - self._last_alert < ALERT_INTERVAL_S:
+            return
+        self._last_alert = now
+        await self._alert(f"OpenRouter: ошибка ключа или баланса (HTTP {code})")
+
     async def _raise_for_status(self, resp: httpx.Response) -> None:
         if resp.status_code < 400:
             return
@@ -107,7 +147,7 @@ class OpenRouterClient:
             detail = ""
         code = resp.status_code
         if code in (401, 402, 403):
-            await self._alert(f"OpenRouter: ошибка ключа или баланса (HTTP {code})")
+            await self._key_alert(code)
             msg = MSG_UNAVAILABLE
         elif code == 429:
             msg = MSG_OVERLOADED
@@ -151,7 +191,14 @@ class OpenRouterClient:
                         detail = _provider_message(chunk)
                         logger.warning("openrouter mid-stream error: %s", detail)
                         code = chunk["error"].get("code") if isinstance(chunk["error"], dict) else None
-                        raise LLMError(code if isinstance(code, int) else None, MSG_MODEL_ERROR, detail)
+                        code = code if isinstance(code, int) else None
+                        msg = MSG_MODEL_ERROR
+                        if code in (401, 402, 403):
+                            await self._key_alert(code)
+                            msg = MSG_UNAVAILABLE
+                        elif code == 429:
+                            msg = MSG_OVERLOADED
+                        raise LLMError(code, msg, detail, chunk.get("id") or state.get("id"))
                     if chunk.get("id"):
                         state["id"] = chunk["id"]
                     if chunk.get("model"):
@@ -163,12 +210,14 @@ class OpenRouterClient:
                             state["finish_reason"] = choice["finish_reason"]
                         text = (choice.get("delta") or {}).get("content")
                         if text:
-                            yield StreamDelta(text)
+                            yield StreamDelta(text, state.get("id"))
         except httpx.HTTPError as exc:
             logger.warning("openrouter transport error: %s", type(exc).__name__)
             raise LLMError(None, MSG_MODEL_ERROR, type(exc).__name__) from exc
         if not finished:
-            raise LLMError(None, MSG_MODEL_ERROR, "stream ended without [DONE]")
+            raise LLMError(
+                None, MSG_MODEL_ERROR, "stream ended without [DONE]", state.get("id")
+            )
         yield _usage_done(state, usage)
 
     async def complete(

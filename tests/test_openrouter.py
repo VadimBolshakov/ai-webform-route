@@ -81,7 +81,10 @@ async def test_stream_parses_deltas_and_usage(make_client):
     )
     route = respx.post(f"{BASE}/chat/completions").respond(200, content=body)
     events = await collect(make_client())
-    assert events[:2] == [StreamDelta("Привет"), StreamDelta(", мир")]
+    assert events[:2] == [
+        StreamDelta("Привет", "gen-abc123"),
+        StreamDelta(", мир", "gen-abc123"),
+    ]
     assert len(events) == 3
     assert events[2] == StreamDone(
         model="anthropic/claude-x",
@@ -180,7 +183,8 @@ async def test_error_inside_stream(make_client):
     with pytest.raises(LLMError) as ei:
         async for ev in client.stream_chat("a/b", MSGS):
             got.append(ev)
-    assert got == [StreamDelta("часть")]
+    assert got == [StreamDelta("часть", "gen-abc123")]
+    assert ei.value.generation_id == "gen-1"
     assert ei.value.user_message == "Ошибка модели, попробуйте ещё раз"
     assert ei.value.detail == "upstream exploded"
     assert "upstream exploded" not in ei.value.user_message
@@ -189,8 +193,9 @@ async def test_error_inside_stream(make_client):
 @respx.mock
 async def test_truncated_stream_raises(make_client):
     respx.post(f"{BASE}/chat/completions").respond(200, content=sse(chunk("x"), done=False))
-    with pytest.raises(LLMError):
+    with pytest.raises(LLMError) as ei:
         await collect(make_client())
+    assert ei.value.generation_id == "gen-abc123"
 
 
 class TrackedStream(httpx.AsyncByteStream):
@@ -215,7 +220,7 @@ async def test_early_exit_closes_stream(make_client):
     client = make_client()
     async with aclosing(client.stream_chat("a/b", MSGS)) as gen:
         async for ev in gen:
-            assert ev == StreamDelta("a")
+            assert ev == StreamDelta("a", "gen-abc123")
             break
     assert stream.closed
 
@@ -280,3 +285,69 @@ async def test_get_model_info(make_client):
     assert await client.get_model_info("a/vis") == {"name": "Vision", "supports_images": True}
     assert await client.get_model_info("a/text") == {"name": "Text", "supports_images": False}
     assert await client.get_model_info("nope/x") is None
+
+
+@respx.mock
+async def test_unknown_cost_is_none_and_zero_is_zero(make_client):
+    route = respx.post(f"{BASE}/chat/completions")
+    route.respond(200, content=sse(chunk("x")))  # [DONE] without usage
+    assert (await collect(make_client()))[-1].cost_usd is None
+    route.respond(200, content=sse(chunk("x"), chunk(None, "stop", {"prompt_tokens": 1})))
+    assert (await collect(make_client()))[-1].cost_usd is None
+    route.respond(200, content=sse(chunk("x"), chunk(None, "stop", {"cost": "abc"})))
+    assert (await collect(make_client()))[-1].cost_usd is None
+    route.respond(200, content=sse(chunk("x"), chunk(None, "stop", {"cost": 0})))
+    assert (await collect(make_client()))[-1].cost_usd == Decimal("0")
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+@respx.mock
+async def test_key_alert_throttled_per_30_min(settings, notifier):
+    respx.post(f"{BASE}/chat/completions").respond(402, json={})
+    s = settings.model_copy(update={"openrouter_base_url": BASE})
+    clock = Clock()
+    async with httpx.AsyncClient() as http:
+        client = OpenRouterClient(s, http, notifier, clock=clock)
+        for _ in range(3):
+            with pytest.raises(LLMError):
+                await collect(client)
+        assert len(notifier.alerts) == 1
+        clock.t += 29 * 60
+        with pytest.raises(LLMError):
+            await collect(client)
+        assert len(notifier.alerts) == 1
+        clock.t += 2 * 60
+        with pytest.raises(LLMError):
+            await collect(client)
+        assert len(notifier.alerts) == 2
+
+
+@respx.mock
+async def test_mid_stream_key_error_alerts_and_maps(make_client, notifier):
+    body = sse(
+        chunk("x"),
+        {"id": "gen-7", "error": {"code": 402, "message": "insufficient credits"}, "choices": []},
+    )
+    respx.post(f"{BASE}/chat/completions").respond(200, content=body)
+    with pytest.raises(LLMError) as ei:
+        await collect(make_client())
+    assert ei.value.user_message == "Сервис временно недоступен"
+    assert ei.value.status == 402
+    assert ei.value.generation_id == "gen-7"
+    assert notifier.alerts == ["OpenRouter: ошибка ключа или баланса (HTTP 402)"]
+
+
+@respx.mock
+async def test_mid_stream_429_maps(make_client):
+    body = sse({"id": "g", "error": {"code": 429, "message": "slow"}, "choices": []})
+    respx.post(f"{BASE}/chat/completions").respond(200, content=body)
+    with pytest.raises(LLMError) as ei:
+        await collect(make_client())
+    assert ei.value.user_message == "Модель перегружена, попробуйте позже"
