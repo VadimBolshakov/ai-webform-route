@@ -1,0 +1,54 @@
+# MVP — решения, принятые при выполнении плана
+
+Источник: ledger subagent-driven-development (2026-10-17). Каждая строка: решение — почему — цена ошибки.
+
+- Ruling: Python 3.13 (local is 3.13.5) instead of plan's 3.12; image python:3.13-slim, requires-python >=3.12 — spec doesn't pin version — cost if wrong: a lib lacking 3.13 wheels, swap image.
+- Ruling: work on branch feat/mvp in the Dropbox folder, no separate worktree — single-writer sequential plan — cost: Dropbox sync churn of .venv (excluded? no) — acceptable.
+- Ruling: user approved downloads (PyPI, docker images, SecLists list, vendor JS via jsdelivr) on 2026-10-17 — no stop needed in T3/T12.
+- Ruling: dev Docker postgres on host port 5433 (native Windows postgres holds 5432) via DB_HOST_PORT/TEST_DATABASE_URL — cost if wrong: env var friction only.
+- Task 1: minor (deferred): conftest engine drop_all has no _test DB-name guard — Ruling: fold into Task 2 dispatch — cheap safety
+- Task 1: minor (deferred): no regression test for savepoint isolation — Ruling: add in Task 2
+- Ruling: Invite.created_by_id ON DELETE CASCADE, used_by_id SET NULL — admin can't delete self (T13), so cascade only hits test/edge cases — cost: lost invite history if an admin is ever deleted.
+- Ruling: Usage.user_label anonymization and Chat.updated_at stay in app logic (T13, T11) — per plan.
+- Task 3: minor (deferred): breached.txt not package data; Ruling: Task 4 switches pyproject to packages.find + package-data — avoids per-task package list edits
+- Task 3: minor (deferred): limiter never evicts idle keys; Ruling: fix in Task 5 (IP-keyed login limiter) — delete empty deques
+- Task 3: minor (deferred): TOTP replay within window; Ruling: Task 6 tracks last used time-step per user (in-memory) — cost: small extra state
+- Task 3: minor (deferred): no max password length / NFKC; Ruling: Task 5/7 cap password input at 256 chars
+- Ruling: commit trailer names the model that actually wrote the commit (subagents: Sonnet 5.5) — truthful attribution — cost: none.
+- Task 4: minor (deferred): /app prefix over-matches /apple; Ruling: tighten in Task 5 (path=="/app" or startswith "/app/")
+- Task 4: minor (deferred): 405 on /app routes leaks route existence; Ruling: Task 5 maps 405 to neutral 404 for /a/ and /app paths
+- Ruling: client IP behind proxy — Task 15 runs uvicorn with --proxy-headers --forwarded-allow-ips set to the caddy/nginx container only — cost if missed: all logins share proxy IP for rate-limit/audit.
+- Task 5: minor (deferred): Argon2 blocks event loop; Ruling: fold into Task 6 dispatch (asyncio.to_thread for hash/verify) — cheap, protects streaming
+- Task 5: minor (deferred): authenticate notifier param defaults None; Ruling: Task 6 makes it required
+- Task 5: minor (deferred): 2FA path exemption prefix too broad; Ruling: Task 6 tightens (== or startswith +"/")
+- Task 6: dispatched (base a2e91ef, implementer a421d6f805ed08934, sonnet). Ruling: TOTP replay guard stored as users.totp_last_step (migration 0002) — persistent across restarts — cost: one column.
+- Task 6: minor (deferred): totp_pending session has 7-day TTL; Ruling: Task 7 dispatch sets pending sessions to 10 min expiry, not touched-extended
+- Task 6: minor (deferred): GET /2fa regenerates secret on every load (plan-mandated); Ruling: Task 13 reuses existing unconfirmed secret — better UX, spec silent — cost: none
+- Task 6: minor (deferred): shared alert text for disable failures; duplicated lock-select and MAX_CODE; verify_totp possibly unused; account/routes imports client_ip from auth.routes (Ruling: Task 7 moves client_ip to app/web/request_info.py); no login_password_ok audit event
+- Task 6: minor (deferred): duplicate audit login_fail + totp_disable_fail; delete_cookie attributes hardcoded in account/routes (Ruling: Task 7 centralises set/clear cookie helpers in app/auth/sessions.py)
+- Ruling: 'username taken' message shown to valid invite holders — invitees are trusted friends, unavoidable for registration UX — cost: username enumeration by invitees only.
+- Task 7: minor (deferred): invite token in access logs — Ruling: stage 2 nginx log format redacts /join/*; Notifier awaited in request — Ruling: stage 2 Telegram notifier uses short timeout (≤5 s)
+- Task 8: dispatched (base 766a901, implementer a13b1c8ccdb48add0, sonnet). Ruling: extract_attachment is async with max_bytes kwarg (plan signature sync) — needed for to_thread timeout — cost: none
+- Task 9: dispatched (base 2eee518, implementer a10fe3130046eeb4e, sonnet). Ruling: OpenRouterClient takes notifier in ctor; user_content() helper builds text/image parts — plan left content assembly implicit
+- Ruling: key/balance alert throttled to once per 30 min per client and mid-stream 401/402/403 mapped like HTTP — avoids alert spam on depleted balance — cost: delayed repeat alerts
+- Task 9: minor (deferred): json/non-dict body errors in get_generation_cost/get_model_info/complete raise raw errors (Ruling: Task 14 backfill wraps calls in try/except); _file_block escaping; trimmed history may start with assistant turn; test gaps (5xx generation cost, complete errors, unparsable chunk)
+- Task 10: dispatched (base 14bf58f, implementer a97eee135b3b49766, sonnet). Ruling: notify_thresholds gains db/ip params for the limit_reached audit; limit 0 blocks without threshold alerts
+- Task 10: minor (deferred): missing exact-80% and 4.1→5.2 tests; audit-on-alert-failure assertions; logger.exception may log notifier URL/token (Ruling: stage 2 Telegram notifier sanitises errors, logs type only); NULL cost counts 0 until backfill
+- Task 11: dispatched (base 0a954e9, implementer a2c443b3ebc786e7f, opus — integration hub). Ruling: post-stream persistence in a new transaction via overridable session factory; retry can't resend images (names only stored); limits 5 files/msg, 32000 chars text
+- Ruling: /app/chats POST endpoints require X-CSRF-Token header (no form fallback) and never use request.form() — enforces "files never on disk" (reviewer minor 1+2) — cost: non-JS form posts to these endpoints impossible (UI is JS anyway)
+- Ruling: interrupted path prefers a received StreamDone; money formatted fixed-point
+- Ruling: CancelledError re-raise after shielded persistence accepted (anyio semantics)
+- Task 11: minor (deferred): _read_form 413/415/400 plain HTTP (UI must handle both shapes); persistence failure logged twice; create_chat returns 303 (Ruling: Task 12 returns HX-Redirect for HTMX requests)
+- Ruling: assistant reply and generated titles pass through clean_text before persisting — fold into Task 12 dispatch — cost: none
+- Ruling: Referrer-Policy changes from no-referrer to same-origin (spec §9 / plan constraint said no-referrer) — with no-referrer Chromium sends Origin: null on same-origin form POSTs and OriginCheck rejects login/join/2FA/logout; same-origin still sends no Referer cross-origin (the actual goal: invite link never leaks off-site) — cost if wrong: same-origin requests carry full Referer to our own server only. Applied in Task 12 fix round; spec+plan text updated by controller.
+- Ruling: SSE error events from stream_reply carry "retry": true; pre-stream errors don't — accepted (prevents regenerating previous question)
+- Ruling: history answers show model only (no tokens/price) — usage not linked to messages; deferred to stage 3 (needs migration usage.message_id)
+- Ruling: login_fail for existing users is audited with user_id set and no username in details; delete_account also scrubs user_id-NULL rows labelled with the username — root-cause fix (also resolves Task 5 minor) — cost: none
+- Ruling: Task 14 cleanup job also deletes audit rows with user_id NULL and event login_fail older than 30 days (unknown-username attempts may hold typos/passwords) — cost: shorter forensic window for unknown names
+- Task 14: dispatched (base 0ffa689, implementer afd879fde2df70ee7, sonnet). Ruling: admin cannot block another admin
+- Ruling: final fix wave folds minors 3,4,5,7,8 (CLI reset-2fa/reset-password),9,10,12,13(base_url validation/port normalisation) — cheap, user-facing or privacy — cost: larger fix diff
+- Ruling: usage:{include:true} not added — 2026 OpenRouter docs say usage always included
+- Ruling: decoy fingerprinting (/healthz, VERSIONS.txt, 405 JSON on /), 500 security headers, lock file, PDF early stop, single-worker enforcement → Stage 2
+- Final: parked — duplicate Content-Type header bypasses multipart ban (body still ≤64 KB, nothing to disk) — Ruling: residual, follow-up session
+- Final: parked — BASE_URL with malformed port/userinfo passes validator, Origin check fails open/closed — Ruling: residual, follow-up session (operator-controlled config)
+- Final: parked — reset-password/reset-2fa don't clear failed_logins/locked_until — Ruling: residual, follow-up session
