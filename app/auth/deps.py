@@ -3,11 +3,10 @@ from dataclasses import dataclass
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.sessions import get_session, touch
+from app.auth.sessions import COOKIE_NAME, get_session, touch
 from app.db import get_db
 from app.models import AuthSession, User
 
-COOKIE_NAME = "__Host-sid"
 TWO_FA_PATH = "/app/settings/2fa"
 LOGOUT_PATH = "/app/logout"
 

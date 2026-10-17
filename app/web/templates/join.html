@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Регистрация{% endblock %}
+{% block content %}
+<form method="post" action="/a/{{ token }}/join/{{ invite }}" class="login" autocomplete="off">
+  <h1>Регистрация</h1>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <label>Логин <input type="text" name="username" required maxlength="32" autocomplete="username" value="{{ username }}" autofocus></label>
+  <label>Пароль <input type="password" name="password" required maxlength="1024" autocomplete="new-password"></label>
+  <label>Повторите пароль <input type="password" name="password2" required maxlength="1024" autocomplete="new-password"></label>
+  <label class="check"><input type="checkbox" name="accepted" value="1" required> Я прочитал(а) и принимаю: <a href="/a/{{ token }}/privacy" target="_blank" rel="noopener">Политика конфиденциальности</a></label>
+  <button type="submit">Зарегистрироваться</button>
+</form>
+{% endblock %}

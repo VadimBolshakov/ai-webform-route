@@ -1,17 +1,38 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select, update
+from fastapi import Response
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.models import AuthSession, User
 from app.security.tokens import hash_token, new_token
 
+COOKIE_NAME = "__Host-sid"
 SESSION_TTL = timedelta(days=7)
+PENDING_TTL = timedelta(minutes=10)  # окно ввода кода 2FA; не продлевается
 TOUCH_INTERVAL = timedelta(minutes=10)
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def set_session_cookie(response: Response, raw_id: str, settings: Settings) -> None:
+    # settings пока не влияет на срок: TTL сессии — константа SESSION_TTL (см. create_session).
+    response.set_cookie(
+        COOKIE_NAME,
+        raw_id,
+        max_age=int(SESSION_TTL.total_seconds()),
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
 
 
 async def create_session(
@@ -22,7 +43,7 @@ async def create_session(
         id_hash=hash_token(raw),
         user_id=user.id,
         csrf_token=new_token(),
-        expires_at=utcnow() + SESSION_TTL,
+        expires_at=utcnow() + (PENDING_TTL if totp_pending else SESSION_TTL),
         ip=ip[:45],
         user_agent=ua[:512],
         totp_pending=totp_pending,
@@ -50,6 +71,8 @@ async def get_session(db: AsyncSession, raw_id: str | None) -> AuthSession | Non
 
 
 async def touch(db: AsyncSession, s: AuthSession) -> None:
+    if s.totp_pending:
+        return  # промежуточная сессия живёт фиксированные 10 минут
     now = utcnow()
     if now - s.last_seen < TOUCH_INTERVAL:
         return

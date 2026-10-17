@@ -1,11 +1,13 @@
 import hmac
+import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import COOKIE_NAME, AuthContext, current_auth
+from app.auth.deps import AuthContext, current_auth
+from app.auth.invites import InviteError, InviteInvalid, get_valid_invite, redeem_invite
 from app.auth.service import (
     LOCK_THRESHOLD,
     audit,
@@ -13,21 +15,27 @@ from app.auth.service import (
     consume_totp,
     register_failure,
 )
-from app.auth.sessions import create_session, get_session, revoke, utcnow
+from app.auth.sessions import (
+    COOKIE_NAME,
+    clear_session_cookie,
+    create_session,
+    get_session,
+    revoke,
+    set_session_cookie,
+    utcnow,
+)
 from app.db import get_db
 from app.models import User
 from app.notify.base import Notifier, get_notifier
 from app.security.csrf import require_csrf
+from app.web.request_info import client_ip
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 GENERIC_ERROR = "Неверный логин или пароль"
 MAX_FIELD = 1024
 MAX_CODE = 16
-
-
-def client_ip(request: Request) -> str:
-    return request.client.host if request.client else ""
 
 
 def _check_token(request: Request, token: str) -> None:
@@ -39,18 +47,6 @@ def _check_token(request: Request, token: str) -> None:
 def _form(request: Request, token: str, error: str | None = None, status: int = 200):
     return request.app.state.templates.TemplateResponse(
         request, "login.html", {"token": token, "error": error}, status_code=status
-    )
-
-
-def _set_cookie(resp, raw: str) -> None:
-    resp.set_cookie(
-        COOKIE_NAME,
-        raw,
-        max_age=7 * 24 * 3600,
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="strict",
     )
 
 
@@ -97,7 +93,7 @@ async def login_submit(
     await db.commit()
 
     resp = RedirectResponse(f"/a/{token}/totp" if pending else "/app", status_code=303)
-    _set_cookie(resp, raw)
+    set_session_cookie(resp, raw, request.app.state.settings)
     return resp
 
 
@@ -114,7 +110,7 @@ def _totp_form(
 
 def _drop_session_redirect(token: str):
     resp = RedirectResponse(f"/a/{token}", status_code=303)
-    resp.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+    clear_session_cookie(resp)
     return resp
 
 
@@ -163,7 +159,7 @@ async def totp_submit(
         await audit(db, "login_ok", user, ip)
         await db.commit()
         resp = RedirectResponse("/app", status_code=303)
-        _set_cookie(resp, raw)
+        set_session_cookie(resp, raw, request.app.state.settings)
         return resp
 
     await audit(db, "totp_fail", user, ip)
@@ -187,5 +183,82 @@ async def logout(
     await audit(db, "logout", ctx.user, client_ip(request))
     await db.commit()
     resp = RedirectResponse("/", status_code=303)
-    resp.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+    clear_session_cookie(resp)
     return resp
+
+
+def _join_form(
+    request: Request,
+    token: str,
+    invite: str,
+    username: str = "",
+    error: str | None = None,
+    status: int = 200,
+):
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "join.html",
+        {"token": token, "invite": invite, "username": username, "error": error},
+        status_code=status,
+    )
+
+
+@router.get("/a/{token}/join/{invite}")
+async def join_form(request: Request, token: str, invite: str, db: AsyncSession = Depends(get_db)):
+    _check_token(request, token)
+    if await get_valid_invite(db, invite) is None:
+        raise HTTPException(status_code=404)
+    return _join_form(request, token, invite)
+
+
+@router.post("/a/{token}/join/{invite}")
+async def join_submit(
+    request: Request,
+    token: str,
+    invite: str,
+    username: str = Form(""),
+    password: str = Form(""),
+    password2: str = Form(""),
+    accepted: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+    notifier: Notifier = Depends(get_notifier),
+):
+    _check_token(request, token)
+    if await get_valid_invite(db, invite) is None:
+        raise HTTPException(status_code=404)
+    ip = client_ip(request)
+    shown = username.strip()[:64]
+    if len(username) > MAX_FIELD or len(password) > MAX_FIELD or len(password2) > MAX_FIELD:
+        return _join_form(request, token, invite, "", "Слишком длинное значение.", 400)
+    if password != password2:
+        return _join_form(request, token, invite, shown, "Пароли не совпадают.", 400)
+    try:
+        user = await redeem_invite(
+            db, invite, username, password, bool(accepted), request.app.state.settings, ip
+        )
+    except InviteInvalid:
+        raise HTTPException(status_code=404) from None
+    except InviteError as e:
+        await db.rollback()
+        return _join_form(request, token, invite, shown, str(e), 400)
+
+    old = await get_session(db, request.cookies.get(COOKIE_NAME))
+    if old is not None:
+        await revoke(db, old)
+    raw, _ = await create_session(db, user, ip, request.headers.get("user-agent", ""))
+    await audit(db, "login_ok", user, ip)
+    await db.commit()
+    try:
+        await notifier.alert(f"Новый пользователь: {user.username}")
+    except Exception:
+        logger.exception("notifier.alert failed")
+
+    resp = RedirectResponse("/app", status_code=303)
+    set_session_cookie(resp, raw, request.app.state.settings)
+    return resp
+
+
+@router.get("/a/{token}/privacy")
+async def privacy(request: Request, token: str):
+    _check_token(request, token)
+    return request.app.state.templates.TemplateResponse(request, "privacy.html", {"token": token})

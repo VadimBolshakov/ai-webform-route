@@ -5,10 +5,9 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import COOKIE_NAME, AuthContext, current_auth
-from app.auth.routes import client_ip
+from app.auth.deps import AuthContext, current_auth
 from app.auth.service import LOCK_THRESHOLD, audit, consume_totp, register_failure
-from app.auth.sessions import revoke, utcnow
+from app.auth.sessions import clear_session_cookie, revoke, utcnow
 from app.db import get_db
 from app.models import User
 from app.notify.base import Notifier, get_notifier
@@ -16,6 +15,7 @@ from app.security.crypto import decrypt, encrypt
 from app.security.csrf import require_csrf
 from app.security.passwords import MAX_LENGTH, verify_password
 from app.security.totp import new_totp_secret, provisioning_qr_svg
+from app.web.request_info import client_ip
 
 router = APIRouter(prefix="/app/settings")
 
@@ -116,7 +116,7 @@ async def twofa_disable(
             await audit(db, "login_fail", user, ip, reason="totp_disable")
             await db.commit()
             resp = RedirectResponse("/", status_code=303)
-            resp.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+            clear_session_cookie(resp)
             return resp
         return _page(request, ctx, user, "Неверный пароль или код", 400)
     user.totp_enabled = False

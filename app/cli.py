@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.service import audit
+from app.auth.usernames import validate_username
 from app.config import get_settings
 from app.db import make_engine, make_sessionmaker
 from app.models import User
@@ -16,7 +17,7 @@ from app.security.passwords import hash_password, validate_password
 
 async def create_admin(db: AsyncSession, username: str, password: str) -> User:
     username = username.strip().lower()
-    errors = validate_password(password, username)
+    errors = validate_username(username) or validate_password(password, username)
     if errors:
         raise ValueError("; ".join(errors))
     existing = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
