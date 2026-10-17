@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import (
     http_exception_handler,

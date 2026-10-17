@@ -10,7 +10,7 @@ from app.auth.sessions import create_session
 from app.chat.context import build_messages
 from app.models import AllowedModel, AuditLog, AuthSession, Chat, Message, Usage, User
 from tests.fakes import FakeNotifier
-from tests.test_auth import PASSWORD, login, make_user
+from tests.test_auth import PASSWORD, make_user
 from tests.test_chat import make_chat, signed_in
 
 S = "/app/settings"

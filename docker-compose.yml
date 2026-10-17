@@ -10,6 +10,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aichat -d aichat"]
       interval: 5s
@@ -20,11 +21,49 @@ services:
   app:
     build: .
     env_file: .env
-    ports:
-      - "127.0.0.1:8000:8000"
+    environment:
+      FORWARDED_ALLOW_IPS: 172.28.0.10
+    expose:
+      - "8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks: [internal]
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "127.0.0.1:8443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      internal:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://localhost/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  internal:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
 
 volumes:
   pgdata:
+  caddy_data:

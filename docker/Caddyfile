@@ -1,0 +1,10 @@
+{
+	# Локально наружу проброшен только 8443; редиректа с :80 нет.
+	auto_https disable_redirects
+}
+
+# Access-логи не включаем (директивы log нет): токены /join/... и /a/... не должны попадать в логи.
+localhost {
+	tls internal
+	reverse_proxy app:8000
+}

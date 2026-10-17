@@ -6,7 +6,7 @@ import respx
 from sqlalchemy import select
 
 from app.auth.sessions import create_session, utcnow
-from app.models import AllowedModel, AuditLog, AuthSession, Invite, User
+from app.models import AllowedModel, AuditLog, AuthSession, Invite
 from tests.test_auth import login, make_user
 from tests.test_chat import signed_in
 

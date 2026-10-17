@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.sessions import utcnow
 from app.models import AuditLog, User
 from app.notify.base import Notifier
-from app.security.totp import match_totp_step
 from app.security.crypto import decrypt
 from app.security.passwords import (
     MAX_LENGTH,
@@ -16,6 +15,7 @@ from app.security.passwords import (
     needs_rehash,
     verify_password,
 )
+from app.security.totp import match_totp_step
 
 logger = logging.getLogger(__name__)
 LOCK_THRESHOLD = 5

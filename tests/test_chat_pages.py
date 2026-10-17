@@ -235,7 +235,7 @@ async def test_delete_current_chat_redirects(client, db):
     assert r.status_code == 204 and r.headers["hx-redirect"] == "/app"
     h["HX-Current-URL"] = f"https://localhost:8443/app/chats/{keep.id}"
     r = await client.post(f"/app/chats/{keep.id}/pin", headers=h)
-    assert r.status_code == 200 and f'class="chat-item current' in r.text
+    assert r.status_code == 200 and 'class="chat-item current' in r.text
 
 
 async def test_actions_from_all_chats_page_refresh(client, db):

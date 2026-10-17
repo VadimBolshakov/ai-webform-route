@@ -194,11 +194,11 @@ async def _form(request: Request, ctx: AuthContext, *, body: bool = True) -> dic
     except UnsupportedForm:
         if not body:
             verify_csrf(None, ctx.session)  # без токена — 403, а не 415
-        raise HTTPException(status_code=415)
+        raise HTTPException(status_code=415) from None
     except BodyTooLarge:
-        raise HTTPException(status_code=413)
+        raise HTTPException(status_code=413) from None
     except MalformedForm:
-        raise HTTPException(status_code=400)
+        raise HTTPException(status_code=400) from None
     verify_csrf(header or fields.get("csrf_token"), ctx.session)
     return fields
 
@@ -424,7 +424,7 @@ async def delete_my_account(
             db, ctx.user, fields.get("password", ""), ip=client_ip(request), notifier=notifier
         )
     except AdminForbidden:
-        raise HTTPException(status_code=400)
+        raise HTTPException(status_code=400) from None
     except (AccountLocked, WrongPassword) as exc:
         return await _password_failure(request, db, ctx, "delete", exc)
     resp = RedirectResponse("/", status_code=303)

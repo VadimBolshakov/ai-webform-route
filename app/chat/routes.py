@@ -122,11 +122,11 @@ async def _read_form(request: Request, ctx: AuthContext) -> ParsedForm:
     try:
         return await parse_form(request, max_file_bytes=max_bytes, max_files=MAX_FILES)
     except UnsupportedForm:
-        raise HTTPException(status_code=415)
+        raise HTTPException(status_code=415) from None
     except BodyTooLarge:
-        raise HTTPException(status_code=413)
+        raise HTTPException(status_code=413) from None
     except MalformedForm:
-        raise HTTPException(status_code=400)
+        raise HTTPException(status_code=400) from None
 
 
 @router.post("/chats/{chat_id}/messages")
@@ -325,9 +325,9 @@ async def rename_chat(
     try:
         fields = await parse_urlencoded(request, max_bytes=MAX_RENAME_BODY)
     except UnsupportedForm:
-        raise HTTPException(status_code=415)
+        raise HTTPException(status_code=415) from None
     except BodyTooLarge:
-        raise HTTPException(status_code=413)
+        raise HTTPException(status_code=413) from None
     title = " ".join(clean_text(fields.get("title", "")).split())[:MAX_TITLE_CHARS]
     if not title:
         raise HTTPException(status_code=400)

@@ -1,11 +1,11 @@
 """initial
 
 Revision ID: 0001
-Revises: 
+Revises:
 Create Date: 2026-10-17 14:53:39.179070
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = '0001'
