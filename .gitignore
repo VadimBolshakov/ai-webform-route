@@ -9,3 +9,5 @@ __pycache__/
 *.dump
 backups/
 .superpowers/
+*.egg-info/
+!docker/initdb/*.sql
