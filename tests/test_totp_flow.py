@@ -209,3 +209,48 @@ async def test_admin_cannot_disable_totp(client, db, settings):
     boss = (await db.execute(select(User))).scalar_one()
     await db.refresh(boss)
     assert boss.totp_enabled is True
+
+
+async def test_disable_lockout_after_5_failures(client, db, settings):
+    u, secret = await totp_user(db, settings)
+    await login(client)
+    await submit(client, db, pyotp.TOTP(secret).now())
+    token = await csrf(db)
+    nxt = pyotp.TOTP(secret).at(time.time() + 30)
+    bad = {"code": "000000", "password": "wrong-wrong-wrong", "csrf_token": token}
+    for _ in range(4):
+        r = await client.post("/app/settings/2fa/disable", data=bad)
+        assert r.status_code == 400
+    r = await client.post("/app/settings/2fa/disable", data=bad)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert (await db.scalar(select(func.count()).select_from(AuthSession))) == 0
+    await db.refresh(u)
+    assert u.locked_until is not None
+    # Использованная сессия отозвана: верные данные уже не проходят.
+    good = {"code": nxt, "password": PASSWORD, "csrf_token": token}
+    assert (await client.post("/app/settings/2fa/disable", data=good)).status_code == 404
+    await db.refresh(u)
+    assert u.totp_enabled is True
+
+
+async def test_disable_refused_while_locked(client, db, settings):
+    from datetime import timedelta
+
+    from app.auth.sessions import create_session, utcnow
+
+    u, secret = await totp_user(db, settings)
+    raw, s = await create_session(db, u, "1.1.1.1", "")
+    u.locked_until = utcnow() + timedelta(minutes=5)
+    await db.commit()
+    client.cookies.set(COOKIE_NAME, raw)
+    r = await client.post(
+        "/app/settings/2fa/disable",
+        data={
+            "code": pyotp.TOTP(secret).at(time.time() + 30),
+            "password": PASSWORD,
+            "csrf_token": s.csrf_token,
+        },
+    )
+    assert r.status_code == 400
+    await db.refresh(u)
+    assert u.totp_enabled is True

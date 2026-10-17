@@ -5,9 +5,10 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import AuthContext, current_auth
+from app.auth.deps import COOKIE_NAME, AuthContext, current_auth
 from app.auth.routes import client_ip
-from app.auth.service import audit, consume_totp, register_failure
+from app.auth.service import LOCK_THRESHOLD, audit, consume_totp, register_failure
+from app.auth.sessions import revoke, utcnow
 from app.db import get_db
 from app.models import User
 from app.notify.base import Notifier, get_notifier
@@ -100,6 +101,8 @@ async def twofa_disable(
     if user.role == "admin" or not user.totp_enabled:
         raise HTTPException(status_code=400)
     ip = client_ip(request)
+    if user.locked_until is not None and user.locked_until > utcnow():
+        return _page(request, ctx, user, "Неверный пароль или код", 400)
     pw_ok = len(password) <= MAX_LENGTH and await asyncio.to_thread(
         verify_password, user.password_hash, password
     )
@@ -108,6 +111,13 @@ async def twofa_disable(
     if not (pw_ok and code_ok):
         await audit(db, "totp_disable_fail", user, ip)
         await register_failure(db, user, ip, notifier)
+        if user.failed_logins >= LOCK_THRESHOLD:
+            await revoke(db, ctx.session)
+            await audit(db, "login_fail", user, ip, reason="totp_disable")
+            await db.commit()
+            resp = RedirectResponse("/", status_code=303)
+            resp.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+            return resp
         return _page(request, ctx, user, "Неверный пароль или код", 400)
     user.totp_enabled = False
     user.totp_secret_enc = None
