@@ -5,7 +5,6 @@ import base64
 import io
 import warnings
 import zipfile
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,6 +12,8 @@ from PIL import Image, ImageOps
 from pypdf import PdfReader
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
+# We check pixel count explicitly; silence Pillow's soft warning (global, set once).
+warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
 TIMEOUT_S = 20.0
 MAX_TEXT_CHARS = 100_000
@@ -90,20 +91,15 @@ def _extract_zip(name: str, data: bytes) -> Attachment:
 _BOMB = (Image.DecompressionBombError, Image.DecompressionBombWarning)
 
 
-@contextmanager
-def _bomb_as_error():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", Image.DecompressionBombWarning)
-        yield
-
-
 def _sniff_image(data: bytes) -> bool:
     try:
-        with _bomb_as_error(), Image.open(io.BytesIO(data)) as img:
-            if img.format not in IMAGE_FORMATS:
-                return False
+        with Image.open(io.BytesIO(data), formats=sorted(IMAGE_FORMATS)) as img:
+            if img.width * img.height > Image.MAX_IMAGE_PIXELS:
+                raise AttachmentError("Изображение слишком большое")
             img.verify()
         return True
+    except AttachmentError:
+        raise
     except _BOMB as exc:
         raise AttachmentError("Изображение слишком большое") from exc
     except Exception:
@@ -113,12 +109,12 @@ def _sniff_image(data: bytes) -> bool:
 def _extract_image(name: str, data: bytes) -> Attachment:
     too_big = AttachmentError("Изображение слишком большое")
     try:
-        with _bomb_as_error(), Image.open(io.BytesIO(data)) as img:
+        with Image.open(io.BytesIO(data), formats=sorted(IMAGE_FORMATS)) as img:
             if img.width * img.height > Image.MAX_IMAGE_PIXELS:
                 raise too_big
             img.seek(0)  # animated GIF/WebP: first frame only
-            img = ImageOps.exif_transpose(img)  # apply orientation before EXIF is dropped
             img.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+            img = ImageOps.exif_transpose(img)  # apply orientation before EXIF is dropped
             has_alpha = img.mode in ("RGBA", "LA") or (
                 img.mode == "P" and "transparency" in img.info
             )

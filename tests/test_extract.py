@@ -115,7 +115,7 @@ async def test_zip_bomb_rejected():
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("word/document.xml", b"\0" * (51 * 1024 * 1024))
     assert len(buf.getvalue()) < 1024 * 1024
-    with pytest.raises(AttachmentError):
+    with pytest.raises(AttachmentError, match="после распаковки"):
         await extract_attachment("b.docx", buf.getvalue(), max_bytes=MAX)
 
 
