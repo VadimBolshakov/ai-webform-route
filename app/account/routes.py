@@ -414,6 +414,11 @@ async def delete_my_account(
             request, db, ctx, status=400,
             errors={"delete": "Аккаунт администратора удалить нельзя"},
         )
+    if fields.get("confirm") != "1":
+        return await _settings_page(
+            request, db, ctx, status=400,
+            errors={"delete": "Подтвердите, что понимаете: удаление необратимо"},
+        )
     try:
         await delete_account(
             db, ctx.user, fields.get("password", ""), ip=client_ip(request), notifier=notifier

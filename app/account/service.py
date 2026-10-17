@@ -189,12 +189,24 @@ async def delete_account(
             .execution_options(populate_existing=True)
         )
     ).scalar_one()
+    if user.role == "admin":  # роль могла измениться до блокировки строки
+        raise AdminForbidden()
     await check_password(db, user, password, ip, notifier)
 
     uid = user.id
+    username = user.username
     label = deleted_label(uid)
     await db.execute(update(Usage).where(Usage.user_id == uid).values(user_label=label))
-    await db.execute(update(AuditLog).where(AuditLog.user_id == uid).values(user_label=label))
+    # Строки по user_id и «осиротевшие» (без user_id, но с именем): метка и имя в details.
+    no_name = AuditLog.details.op("-")("username")
+    await db.execute(
+        update(AuditLog)
+        .where(
+            (AuditLog.user_id == uid)
+            | (AuditLog.user_id.is_(None) & (AuditLog.user_label == username))
+        )
+        .values(user_label=label, details=no_name)
+    )
     db.add(AuditLog(event="account_deleted", user_id=uid, user_label=label, ip=ip[:45], details={}))
     await db.flush()
     await db.execute(delete(User).where(User.id == uid))  # каскад: сессии, чаты, сообщения

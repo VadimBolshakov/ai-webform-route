@@ -76,7 +76,13 @@ async def login_submit(
 
     user = await authenticate(db, username, password, ip, notifier)
     if user is None:
-        await audit(db, "login_fail", None, ip, username=username.strip().lower()[:64])
+        uname = username.strip().lower()[:64]
+        known = (await db.execute(select(User).where(User.username == uname))).scalar_one_or_none()
+        if known is not None:
+            # Существующий аккаунт: привязка по user_id, имя в details не пишем.
+            await audit(db, "login_fail", known, ip)
+        else:
+            await audit(db, "login_fail", None, ip, username=uname)
         await db.commit()
         return _form(request, token, GENERIC_ERROR, 401)
 

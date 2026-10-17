@@ -195,13 +195,13 @@ async def test_export_contains_only_own_data(client, db):
 
 async def test_delete_account_requires_password(client, db):
     u, csrf = await signed_in(client, db)
-    r = await post(client, "/delete", csrf, password="wrong-wrong-wrong")
+    r = await post(client, "/delete", csrf, password="wrong-wrong-wrong", confirm="1")
     assert r.status_code == 400
     assert await db.get(User, u.id) is not None
     assert (await client.post(S + "/delete", data={"password": PASSWORD})).status_code == 403
     for _ in range(3):
-        await post(client, "/delete", csrf, password="wrong-wrong-wrong")
-    r = await post(client, "/delete", csrf, password="wrong-wrong-wrong")
+        await post(client, "/delete", csrf, password="wrong-wrong-wrong", confirm="1")
+    r = await post(client, "/delete", csrf, password="wrong-wrong-wrong", confirm="1")
     assert r.status_code == 303 and r.headers["location"] == "/"
     await db.refresh(u)
     assert u.locked_until is not None
@@ -215,7 +215,7 @@ async def test_delete_account_anonymizes_usage(client, db, notifier):
     db.add(Usage(user_id=uid, user_label="alice", chat_id=chat.id, model="v/m", status="ok"))
     db.add(AuditLog(event="login_ok", user_id=uid, user_label="alice"))
     await db.commit()
-    r = await post(client, "/delete", csrf, password=PASSWORD)
+    r = await post(client, "/delete", csrf, password=PASSWORD, confirm="1")
     assert r.status_code == 303 and r.headers["location"] == "/"
     assert COOKIE_NAME in r.headers["set-cookie"]
     label = f"deleted-user-{uid}"
@@ -238,7 +238,7 @@ async def test_delete_alert_failure_is_logged_not_raised(client, db, app):
             raise RuntimeError("x")
 
     app.state.notifier = Boom()
-    r = await post(client, "/delete", csrf, password=PASSWORD)
+    r = await post(client, "/delete", csrf, password=PASSWORD, confirm="1")
     assert r.status_code == 303
     assert await db.get(User, u.id) is None
 
@@ -269,3 +269,31 @@ async def test_twofa_secret_stable_and_regenerate(client, db):
     assert (await post(client, "/2fa/regenerate", csrf)).status_code == 303
     await db.refresh(u)
     assert u.totp_secret_enc != first
+
+
+async def test_delete_requires_confirm(client, db):
+    u, csrf = await signed_in(client, db)
+    r = await post(client, "/delete", csrf, password=PASSWORD)
+    assert r.status_code == 400 and "необратимо" in r.text
+    assert await db.get(User, u.id) is not None
+
+
+async def test_delete_removes_username_from_audit(client, db):
+    from tests.test_auth import LOGIN
+
+    u, csrf = await signed_in(client, db)
+    uid = u.id
+    # неудачный вход (известное имя) и вход с неизвестным именем
+    await client.post(LOGIN, data={"username": "alice", "password": "wrong-wrong-wrong"})
+    # устаревшая строка: без user_id, но с именем
+    db.add(AuditLog(event="login_fail", user_id=None, user_label="alice", details={"username": "alice"}))
+    await db.commit()
+    unknown = (await db.execute(select(AuditLog).where(AuditLog.event == "login_fail"))).scalars().all()
+    assert any(a.user_id == uid and "username" not in a.details for a in unknown)
+    r = await post(client, "/delete", csrf, password=PASSWORD, confirm="1")
+    assert r.status_code == 303
+    for a in (await db.execute(select(AuditLog))).scalars():
+        await db.refresh(a)
+        assert a.user_label != "alice"
+        assert "alice" not in a.details.values()
+        assert "username" not in a.details
