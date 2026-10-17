@@ -14,7 +14,7 @@ EXPECTED = {
     "strict-transport-security": "max-age=31536000",
     "x-frame-options": "DENY",
     "x-content-type-options": "nosniff",
-    "referrer-policy": "no-referrer",
+    "referrer-policy": "same-origin",
     "permissions-policy": "camera=(), geolocation=(), microphone=()",
 }
 

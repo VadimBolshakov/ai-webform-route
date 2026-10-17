@@ -12,15 +12,20 @@
  *      "Стоп" aborts the request (AbortController).
  *
  * Security rules (strict CSP: script-src 'self', style-src 'self'):
- *   - HTML from the model only ever reaches the page through DOMPurify.sanitize();
- *     everything else is inserted with textContent.
+ *   - HTML from the model only ever reaches the page through DOMPurify.sanitize(), with
+ *     no ids/names (DOM clobbering), no htmx attributes, no data-* and only highlight.js
+ *     classes. #messages also carries hx-disable, so htmx ignores everything inside it.
+ *   - Everything else is inserted with textContent.
+ *   - Page elements are looked up once at startup (before any answer is rendered), and
+ *     parts of a message are found among its direct children only, so text inside an
+ *     answer can never be mistaken for a piece of the page.
  *   - No inline styles in markup, no on*= attributes: listeners are attached here.
  */
 (function () {
   "use strict";
 
   // ---------------------------------------------------------------------------------------
-  // 0. Small helpers
+  // 0. Constants and page elements (looked up once, before anything is rendered)
   // ---------------------------------------------------------------------------------------
 
   const RENDER_INTERVAL_MS = 100; // redraw Markdown at most this often while streaming
@@ -29,24 +34,81 @@
   const MSG_BROKEN = "Соединение прервалось";
   const MSG_GENERIC = "Не удалось отправить сообщение";
 
-  function $(selector, root) {
-    return (root || document).querySelector(selector);
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  const page = {
+    chat: byId("chat"),
+    messages: byId("messages"),
+    composer: byId("composer"),
+    input: byId("input"),
+    model: byId("model"),
+    spend: byId("spend"),
+    send: byId("send"),
+    stop: byId("stop"),
+    fileInput: byId("file-input"),
+    fileChips: byId("file-chips"),
+    saveChat: byId("save-chat"),
+    chatTitle: document.querySelector(".chat-head .chat-title"),
+    tplUser: byId("tpl-user"),
+    tplAssistant: byId("tpl-assistant"),
+    tplError: byId("tpl-error"),
+  };
+
+  /** A direct child of `parent` matching `selector` (never something deeper inside). */
+  function child(parent, selector) {
+    return parent.querySelector(":scope > " + selector);
   }
 
   /** CSRF token: the same value HTMX sends, taken from <body hx-headers='{...}'>. */
-  function csrfToken() {
+  const CSRF_TOKEN = (function () {
     try {
       return JSON.parse(document.body.getAttribute("hx-headers") || "{}")["X-CSRF-Token"] || "";
     } catch (e) {
       return "";
     }
-  }
+  })();
 
   // ---------------------------------------------------------------------------------------
   // 1. Rendering
   // ---------------------------------------------------------------------------------------
 
   marked.use({ gfm: true, breaks: true });
+  hljs.configure({ ignoreUnescapedHTML: true });
+
+  const PURIFY_OPTIONS = {
+    USE_PROFILES: { html: true },
+    // Inline styles would violate the CSP; images from the model are not shown;
+    // form controls have no business inside an answer.
+    FORBID_TAGS: ["style", "img", "form", "input", "button", "textarea", "select"],
+    // id/name could shadow page elements (DOM clobbering), e.g. id="model".
+    FORBID_ATTR: ["style", "id", "name"],
+    SANITIZE_NAMED_PROPS: true,
+    // data-* would let data-hx-* through to htmx.
+    ALLOW_DATA_ATTR: false,
+  };
+
+  DOMPurify.addHook("uponSanitizeAttribute", function (node, data) {
+    const name = data.attrName.toLowerCase();
+    // htmx attributes in any spelling: never in model output.
+    if (name.startsWith("hx-") || name.startsWith("data-hx-")) {
+      data.keepAttr = false;
+      return;
+    }
+    // Only code-language classes survive (marked: language-*, highlight.js: hljs*), so an
+    // answer cannot dress up as page UI (.msg, .meta-info, .error-banner, .menu…).
+    if (name === "class") {
+      const kept = data.attrValue.split(/\s+/).filter(function (c) {
+        return /^(language-|hljs)/.test(c);
+      });
+      if (kept.length) {
+        data.attrValue = kept.join(" ");
+      } else {
+        data.keepAttr = false;
+      }
+    }
+  });
 
   // Every link in a rendered answer opens in a new tab and leaks nothing to the target.
   DOMPurify.addHook("afterSanitizeAttributes", function (node) {
@@ -56,25 +118,17 @@
     }
   });
 
-  const PURIFY_OPTIONS = {
-    USE_PROFILES: { html: true },
-    // Inline styles would violate the CSP; images from the model are not shown;
-    // form controls have no business inside an answer.
-    FORBID_TAGS: ["style", "img", "form", "input", "button", "textarea", "select"],
-    FORBID_ATTR: ["style"],
-  };
-
   /** Raw text of a message lives in its <template class="md"> (filled by the server). */
   function getSource(msg) {
-    return $("template.md", msg).content.textContent;
+    return child(msg, "template.md").content.textContent;
   }
 
   function setSource(msg, text) {
-    $("template.md", msg).content.textContent = text;
+    child(msg, "template.md").content.textContent = text;
   }
 
   function addCopyButton(pre) {
-    const code = $("code", pre);
+    const code = child(pre, "code");
     const button = document.createElement("button");
     button.type = "button";
     button.className = "copy";
@@ -90,7 +144,7 @@
 
   /** Draw a message body from its source text. */
   function renderMessage(msg) {
-    const body = $(".body", msg);
+    const body = child(msg, ".body");
     const text = getSource(msg);
     if (msg.dataset.role !== "assistant") {
       body.textContent = text; // the user's own text: never interpreted as HTML
@@ -98,7 +152,7 @@
     }
     body.innerHTML = DOMPurify.sanitize(marked.parse(text), PURIFY_OPTIONS);
     body.querySelectorAll("pre").forEach(function (pre) {
-      const code = $("code", pre);
+      const code = child(pre, "code");
       if (code) hljs.highlightElement(code);
       addCopyButton(pre);
     });
@@ -142,10 +196,13 @@
     download("chat-" + currentChatId() + "-" + id + "." + ext, getSource(msg), mime);
   }
 
+  function allMessages() {
+    return page.messages.querySelectorAll(":scope > .msg");
+  }
+
   function saveWholeChat() {
-    const title = $(".chat-title").textContent.trim();
-    const parts = ["# " + title, ""];
-    document.querySelectorAll("#messages .msg").forEach(function (msg) {
+    const parts = ["# " + page.chatTitle.textContent.trim(), ""];
+    allMessages().forEach(function (msg) {
       if (msg.dataset.role === "assistant") {
         const model = msg.dataset.model || "";
         parts.push("## Ассистент" + (model ? " (" + model + ")" : ""), "");
@@ -158,20 +215,17 @@
   }
 
   // ---------------------------------------------------------------------------------------
-  // 3. Page state and DOM building
+  // 3. Message elements
   // ---------------------------------------------------------------------------------------
 
-  const chatEl = document.getElementById("chat");
-  const messagesEl = document.getElementById("messages");
-  const composer = document.getElementById("composer");
-
   function currentChatId() {
-    return chatEl ? chatEl.dataset.chatIdCurrent : "";
+    return page.chat ? page.chat.dataset.chatIdCurrent : "";
   }
 
   /** New message element from <template id="tpl-user|tpl-assistant">. */
   function newMessage(role, text, fileNames) {
-    const msg = $("#tpl-" + role).content.firstElementChild.cloneNode(true);
+    const tpl = role === "user" ? page.tplUser : page.tplAssistant;
+    const msg = tpl.content.firstElementChild.cloneNode(true);
     setSource(msg, text);
     if (fileNames && fileNames.length) {
       const chips = document.createElement("ul");
@@ -184,16 +238,16 @@
       });
       msg.insertBefore(chips, msg.firstChild);
     }
-    const hint = $(".empty-hint", messagesEl);
+    const hint = child(page.messages, ".empty-hint");
     if (hint) hint.hidden = true;
-    messagesEl.appendChild(msg);
+    page.messages.appendChild(msg);
     renderMessage(msg);
     msg.scrollIntoView({ block: "end" });
     return msg;
   }
 
   function setMeta(msg, text) {
-    $(".meta-info", msg).textContent = text;
+    child(msg, ".meta > .meta-info").textContent = text;
   }
 
   function formatDone(data) {
@@ -205,17 +259,23 @@
   }
 
   function showError(msg, text, canRetry) {
-    const banner = $("#tpl-error").content.firstElementChild.cloneNode(true);
-    $(".error-text", banner).textContent = text;
-    const retryButton = $(".retry", banner);
+    const banner = page.tplError.content.firstElementChild.cloneNode(true);
+    child(banner, ".error-text").textContent = text;
+    const retryButton = child(banner, ".retry");
     if (canRetry) {
       retryButton.addEventListener("click", function () { retry(msg); });
     } else {
       retryButton.remove();
     }
-    $(".meta", msg).hidden = true;
+    child(msg, ".meta").hidden = true;
     msg.appendChild(banner);
     msg.scrollIntoView({ block: "end" });
+  }
+
+  /** The server did not keep the question: error banner without "Повторить". */
+  function failedWithoutRetry(msg) {
+    const banner = child(msg, ".error-banner");
+    return banner !== null && child(banner, ".retry") === null;
   }
 
   /** Reload the sidebar a bit later: the generated title and new order show up. */
@@ -226,9 +286,9 @@
         swap: "outerHTML",
       }).then(function () {
         // Copy the (maybe new) title of the current chat into the header and the tab.
-        const link = $("#chat-list .chat-item.current .chat-link");
+        const link = document.querySelector("#chat-list .chat-item.current > .chat-link");
         if (link) {
-          $(".chat-title").textContent = link.textContent;
+          page.chatTitle.textContent = link.textContent;
           document.title = link.textContent;
         }
       });
@@ -239,29 +299,19 @@
   // 4. Talking to the server
   // ---------------------------------------------------------------------------------------
 
+  let busy = false; // a send/retry is in progress (set before the first await)
   let controller = null; // AbortController of the running request, if any
 
-  function setBusy(busy) {
-    $("#send").hidden = busy;
-    $("#stop").hidden = !busy;
-    $("#input").disabled = busy;
+  function setBusy(value) {
+    busy = value;
+    page.send.hidden = value;
+    page.stop.hidden = !value;
+    page.input.disabled = value;
   }
 
-  /** On the empty "Новый чат" screen the chat is created on the first send. */
-  async function ensureChat() {
-    if (currentChatId()) return currentChatId();
-    const response = await fetch("/app/chats", {
-      method: "POST",
-      headers: { "X-CSRF-Token": csrfToken(), "HX-Request": "true" },
-      credentials: "same-origin",
-    });
-    const location = response.headers.get("HX-Redirect") || "";
-    const match = location.match(/^\/app\/chats\/(\d+)$/);
-    if (!match) throw new Error("chat not created");
-    chatEl.dataset.chatIdCurrent = match[1];
-    history.replaceState(null, "", location);
-    $("#save-chat").hidden = false;
-    return match[1];
+  /** A failed request with a message ready to show to the user. */
+  function UserFacingError(message) {
+    this.userMessage = message;
   }
 
   /** Friendly Russian text for an answer that is not an event stream (plain HTTP error). */
@@ -280,6 +330,26 @@
       // not JSON — fall through
     }
     return MSG_GENERIC;
+  }
+
+  /** On the empty "Новый чат" screen the chat is created on the first send. */
+  async function ensureChat() {
+    if (currentChatId()) return currentChatId();
+    const response = await fetch("/app/chats", {
+      method: "POST",
+      headers: { "X-CSRF-Token": CSRF_TOKEN, "HX-Request": "true" },
+      credentials: "same-origin",
+    });
+    if (response.status !== 204) {
+      throw new UserFacingError(await httpErrorMessage(response));
+    }
+    const location = response.headers.get("HX-Redirect") || "";
+    const match = location.match(/^\/app\/chats\/(\d+)$/);
+    if (!match) throw new UserFacingError(MSG_GENERIC);
+    page.chat.dataset.chatIdCurrent = match[1];
+    history.replaceState(null, "", location);
+    page.saveChat.hidden = false;
+    return match[1];
   }
 
   /** Split an SSE block ("event: x\ndata: {...}") into {event, data}. */
@@ -301,10 +371,10 @@
   /**
    * POST to `url` and stream the answer into the assistant message `msg`.
    * `isRetry` keeps the "Повторить" button on errors of a retry request.
+   * The caller owns the busy state (setBusy) around this call.
    */
   async function stream(url, body, msg, isRetry) {
     controller = new AbortController();
-    setBusy(true);
     let text = "";
     let finished = false; // got `done` or `error`
     const renderer = throttledRenderer(msg);
@@ -320,7 +390,7 @@
         msg.dataset.msgId = ev.data.message_id || "";
         msg.dataset.model = ev.data.model || "";
         setMeta(msg, formatDone(ev.data));
-        $("#spend").textContent = "Расход: $" + ev.data.spend + " / $" + ev.data.limit;
+        page.spend.textContent = "Расход: $" + ev.data.spend + " / $" + ev.data.limit;
         refreshSidebar();
       } else if (ev.event === "error") {
         finished = true;
@@ -333,7 +403,7 @@
       const response = await fetch(url, {
         method: "POST",
         body: body,
-        headers: { "X-CSRF-Token": csrfToken() },
+        headers: { "X-CSRF-Token": CSRF_TOKEN },
         credentials: "same-origin",
         signal: controller.signal,
       });
@@ -363,27 +433,32 @@
         showError(msg, MSG_BROKEN, true);
       }
     } catch (err) {
+      if (finished) return; // e.g. "Стоп" right after `done`: keep the footer as it is
       renderer.flush();
       if (err.name === "AbortError") {
         // "Стоп": the server keeps what was received and marks it as interrupted.
         setMeta(msg, "прервано");
-      } else if (!finished) {
+      } else {
         showError(msg, text ? MSG_BROKEN : MSG_NETWORK, text !== "" || isRetry);
       }
     } finally {
       controller = null;
-      setBusy(false);
-      $("#input").focus();
     }
   }
 
   /** "Повторить": drop the failed answer and ask the server to answer the last question again. */
-  function retry(failedMsg) {
-    if (controller) return;
-    failedMsg.remove();
-    const msg = newMessage("assistant", "");
-    const model = encodeURIComponent($("#model").value);
-    stream("/app/chats/" + currentChatId() + "/retry?model=" + model, null, msg, true);
+  async function retry(failedMsg) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      failedMsg.remove();
+      const msg = newMessage("assistant", "");
+      const model = encodeURIComponent(page.model.value);
+      await stream("/app/chats/" + currentChatId() + "/retry?model=" + model, null, msg, true);
+    } finally {
+      setBusy(false);
+      page.input.focus();
+    }
   }
 
   // ---------------------------------------------------------------------------------------
@@ -393,8 +468,7 @@
   let files = []; // File objects waiting to be sent
 
   function drawChips() {
-    const list = $("#file-chips");
-    list.textContent = "";
+    page.fileChips.textContent = "";
     files.forEach(function (file, index) {
       const li = document.createElement("li");
       li.className = "chip";
@@ -409,7 +483,7 @@
         drawChips();
       });
       li.appendChild(remove);
-      list.appendChild(li);
+      page.fileChips.appendChild(li);
     });
   }
 
@@ -419,44 +493,51 @@
   }
 
   async function send() {
-    const input = $("#input");
+    const input = page.input;
     const text = input.value;
-    if (controller || (!text.trim() && files.length === 0)) return;
-
-    const sending = files;
-    const form = new FormData();
-    form.append("text", text);
-    form.append("model", $("#model").value);
-    sending.forEach(function (file) { form.append("files", file, file.name); });
-
-    let chatId;
+    if (busy || (!text.trim() && files.length === 0)) return;
+    // Busy before the first await: a second Enter cannot start a second request
+    // (and, on the empty screen, create a second chat).
+    setBusy(true);
     try {
-      chatId = await ensureChat();
-    } catch (e) {
-      const msg = newMessage("assistant", "");
-      showError(msg, MSG_NETWORK, false);
-      return;
-    }
+      const sending = files;
+      const form = new FormData();
+      form.append("text", text);
+      form.append("model", page.model.value);
+      sending.forEach(function (file) { form.append("files", file, file.name); });
 
-    newMessage("user", text, sending.map(function (f) { return f.name; }));
-    input.value = "";
-    autoGrow(input);
-    files = [];
-    drawChips();
+      let chatId;
+      try {
+        chatId = await ensureChat();
+      } catch (e) {
+        const msg = newMessage("assistant", "");
+        showError(msg, e instanceof UserFacingError ? e.userMessage : MSG_NETWORK, false);
+        return; // the text stays in the composer
+      }
 
-    const msg = newMessage("assistant", "");
-    await stream("/app/chats/" + chatId + "/messages", form, msg, false);
-    if (!input.value && $(".error-banner", msg) && !$(".retry", msg)) {
-      // The server did not keep the question (limits, bad file…): give it back for editing.
-      input.value = text;
+      newMessage("user", text, sending.map(function (f) { return f.name; }));
+      input.value = "";
       autoGrow(input);
-      files = sending;
+      files = [];
       drawChips();
+
+      const msg = newMessage("assistant", "");
+      await stream("/app/chats/" + chatId + "/messages", form, msg, false);
+      if (!input.value && failedWithoutRetry(msg)) {
+        // The server did not keep the question (limits, bad file…): give it back for editing.
+        input.value = text;
+        autoGrow(input);
+        files = sending;
+        drawChips();
+      }
+    } finally {
+      setBusy(false);
+      input.focus();
     }
   }
 
   function initComposer() {
-    const input = $("#input");
+    const input = page.input;
     input.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
@@ -464,23 +545,28 @@
       }
     });
     input.addEventListener("input", function () { autoGrow(input); });
-    composer.addEventListener("submit", function (e) {
+    page.composer.addEventListener("submit", function (e) {
       e.preventDefault();
       send();
     });
-    $("#stop").addEventListener("click", function () {
+    page.stop.addEventListener("click", function () {
       if (controller) controller.abort();
     });
-    $("#file-input").addEventListener("change", function (e) {
+    page.fileInput.addEventListener("change", function (e) {
       files = files.concat(Array.from(e.target.files));
       e.target.value = ""; // allow picking the same file again
       drawChips();
     });
-    messagesEl.addEventListener("click", function (e) {
+    page.messages.addEventListener("click", function (e) {
+      // Only our own save buttons: <div class="msg"> (direct child) > .meta > button.save
       const button = e.target.closest("button.save");
-      if (button) saveMessage(button.closest(".msg"), button.dataset.ext);
+      const meta = button && button.parentElement;
+      const msg = meta && meta.parentElement;
+      if (msg && meta.classList.contains("meta") && msg.parentElement === page.messages) {
+        saveMessage(msg, button.dataset.ext);
+      }
     });
-    $("#save-chat").addEventListener("click", saveWholeChat);
+    page.saveChat.addEventListener("click", saveWholeChat);
     input.focus();
   }
 
@@ -488,12 +574,16 @@
   // 6. Start
   // ---------------------------------------------------------------------------------------
 
-  document.querySelectorAll("#messages .msg").forEach(function (msg) {
-    if (msg.dataset.role === "assistant") {
-      msg.dataset.model = $(".meta-info", msg).textContent.split(" · ")[0];
+  if (page.messages) {
+    allMessages().forEach(function (msg) {
+      if (msg.dataset.role === "assistant") {
+        msg.dataset.model = child(msg, ".meta > .meta-info").textContent.split(" · ")[0];
+      }
+      renderMessage(msg);
+    });
+    if (page.messages.lastElementChild) {
+      page.messages.lastElementChild.scrollIntoView({ block: "end" });
     }
-    renderMessage(msg);
-  });
-  if (composer) initComposer();
-  if (messagesEl && messagesEl.lastElementChild) messagesEl.lastElementChild.scrollIntoView({ block: "end" });
+  }
+  if (page.composer) initComposer();
 })();

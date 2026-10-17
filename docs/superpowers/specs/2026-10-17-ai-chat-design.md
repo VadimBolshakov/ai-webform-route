@@ -181,7 +181,7 @@ VPS 2 vCPU / 4 ГБ / 40 ГБ (~€4–7/мес., например Hetzner CX) �
 - Cookie сессии: `__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`; ротация ID после входа и смены пароля.
 - CSRF-токен для всех форм и HTMX-запросов.
 - XSS: автоэкранирование Jinja2, Markdown ответа — через DOMPurify; строгий CSP без внешних источников.
-- Заголовки: HSTS, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy`.
+- Заголовки: HSTS, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `Permissions-Policy`.
 - Файлы: ≤10 МБ, тип по содержимому, обработка в памяти с таймаутом, на диск не пишутся.
 - Секреты только в `.env` на сервере; жёсткий лимит расходов на ключе OpenRouter.
 - Зависимости закреплены по версиям; `pip-audit` в CI.

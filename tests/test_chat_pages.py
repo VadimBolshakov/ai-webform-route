@@ -1,12 +1,15 @@
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import select
 
 from app.models import AllowedModel, Chat, Message, Usage
 from tests.test_auth import make_user
 from tests.test_chat import make_chat, signed_in
+
+STATIC = Path(__file__).parent.parent / "app" / "web" / "static"
 
 XSS_IMG = "<img src=x onerror=alert(1)>"
 XSS_SCRIPT = "<script>alert(1)</script>"
@@ -102,8 +105,17 @@ async def test_chat_page_shell(client, db):
     assert "Расход: $1.20 / $5.00" in html
     assert 'href="/app/settings"' in html
     assert 'href="/app/admin"' not in html
-    for path in ("htmx.min.js", "marked.min.js", "purify.min.js", "highlight.min.js", "chat.js"):
-        assert f'src="/static/{"" if path == "chat.js" else "vendor/"}{path}"' in html
+    # Порядок: библиотеки, затем chat.js.
+    scripts = re.findall(r'<script src="([^"]+)"></script>', html)
+    assert scripts == [
+        "/static/vendor/htmx.min.js",
+        "/static/vendor/marked.umd.js",
+        "/static/vendor/purify.min.js",
+        "/static/vendor/highlight.min.js",
+        "/static/chat.js",
+    ]
+    # Ответы модели вне обработки htmx (data-hx-*/hx-* в Markdown не должны срабатывать).
+    assert re.search(r'<div id="messages"[^>]*\shx-disable[\s>]', html)
     assert r.headers["cache-control"] == "no-store"
 
 
@@ -319,3 +331,30 @@ async def test_all_chats_pagination(client, db):
 async def test_pages_require_session(client):
     for p in ("/app", "/app/chats/all", "/app/chats/sidebar", "/app/chats/1"):
         assert (await client.get(p)).status_code == 404
+
+
+def test_chat_js_sanitizer_options():
+    """Pin the DOMPurify setup: model HTML must not carry htmx attributes, ids or spoofed classes."""
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
+    for needle in (
+        "ALLOW_DATA_ATTR: false",
+        "SANITIZE_NAMED_PROPS: true",
+        'FORBID_ATTR: ["style", "id", "name"]',
+        '"uponSanitizeAttribute"',
+        'startsWith("hx-")',
+        'startsWith("data-hx-")',
+        "/^(language-|hljs)/",
+        "ignoreUnescapedHTML: true",
+    ):
+        assert needle in js, needle
+    assert "innerHTML = DOMPurify.sanitize(" in js
+    # Единственное присваивание innerHTML — результат DOMPurify.
+    assert js.count("innerHTML") == 1
+
+
+def test_vendor_versions_listed():
+    versions = (STATIC / "vendor" / "VERSIONS.txt").read_text(encoding="utf-8")
+    for name in ("htmx.min.js", "marked.umd.js", "purify.min.js", "highlight.min.js",
+                 "hljs-light.css", "hljs-dark.css"):
+        assert (STATIC / "vendor" / name).is_file() and name in versions
+    assert "marked.min.js" not in versions

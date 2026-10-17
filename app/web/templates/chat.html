@@ -42,7 +42,9 @@
       <button type="button" id="save-chat" class="link-button"{% if not chat %} hidden{% endif %}>💾 Сохранить весь чат (.md)</button>
     </header>
 
-    <div id="messages" class="messages" aria-live="polite">
+    {#- hx-disable: htmx не обрабатывает ничего внутри — HTML ответов модели не может
+        запустить hx-*/data-hx-* запросы (они унаследовали бы CSRF-заголовок с <body>). -#}
+    <div id="messages" class="messages" aria-live="polite" hx-disable>
       {% for m in messages %}{% include "_message.html" %}{% endfor %}
       <p class="empty-hint"{% if messages %} hidden{% endif %}>Задайте вопрос — ответ появится здесь.</p>
     </div>
@@ -79,7 +81,7 @@
   </main>
 </div>
 <script src="/static/vendor/htmx.min.js"></script>
-<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/marked.umd.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
 <script src="/static/chat.js"></script>

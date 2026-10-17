@@ -167,10 +167,11 @@ async def test_only_hash_stored(db, settings):
     assert hashes and all(raw not in h and len(h) == 64 for h in hashes)
 
 
-async def test_join_page_has_no_referrer_and_private_headers(client, db, settings):
+async def test_join_page_referrer_same_origin_and_private_headers(client, db, settings):
     raw, _ = await new_invite(db, settings)
     r = await client.get(f"{BASE}/join/{raw}")
-    assert r.headers["referrer-policy"] == "no-referrer"
+    # same-origin: токен инвайта не уходит в Referer на чужие сайты.
+    assert r.headers["referrer-policy"] == "same-origin"
     assert r.headers["cache-control"] == "no-store"
     assert f'href="{BASE}/privacy"' in r.text
 

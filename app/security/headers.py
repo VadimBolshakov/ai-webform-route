@@ -12,7 +12,7 @@ COMMON = [
     (b"strict-transport-security", b"max-age=31536000"),
     (b"x-frame-options", b"DENY"),
     (b"x-content-type-options", b"nosniff"),
-    (b"referrer-policy", b"no-referrer"),
+    (b"referrer-policy", b"same-origin"),
     (b"permissions-policy", b"camera=(), geolocation=(), microphone=()"),
 ]
 PRIVATE = [
