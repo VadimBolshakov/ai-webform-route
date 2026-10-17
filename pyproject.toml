@@ -11,6 +11,9 @@ dependencies = [
     "cryptography==44.0.0",
     "jinja2==3.1.5",
     "alembic==1.14.0",
+    "argon2-cffi==23.1.0",
+    "pyotp==2.9.0",
+    "segno==1.6.1",
 ]
 
 [project.optional-dependencies]
@@ -21,7 +24,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "app.security"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
