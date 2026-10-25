@@ -411,9 +411,14 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
 
 4. Если `pg_restore` напечатал ошибки, приложение не запускайте. Варианты:
    - попробовать другой снапшот: команды `sudo -v` и `sudo ops/backup/restic.sh dump …` из шага 2;
-   - вернуть базу, какой она была до восстановления, — команды ниже; вместо `<дата-время>` подставьте
-     полное имя самого нового файла из списка `ls` шага 1 (например, `before-restore-2026-11-02-1530.dump`
-     → `~/before-restore-2026-11-02-1530.dump`).
+   - вернуть базу, какой она была до восстановления, — команды ниже. Сначала посмотрите имя копии:
+
+     ```bash
+     ls -lh ~/before-restore-*.dump
+     ```
+
+     Возьмите самый новый файл (дата и время — в имени) и в команде восстановления ниже замените
+     `<полный путь к файлу копии>` целиком на путь к нему, например `~/before-restore-2026-11-02-1530.dump`.
 
    Если вы прекращаете восстановление (и не возвращаете базу командами ниже) — верните хотя бы ночной
    бэкап: `sudo systemctl start aichat-backup.timer`.
@@ -421,7 +426,7 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
    ```bash
    cd /opt/aichat
    docker compose stop app
-   docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction < ~/before-restore-<дата-время>.dump
+   docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction < <полный путь к файлу копии>
    docker compose start app
    sudo systemctl start aichat-backup.timer
    ```
@@ -491,7 +496,7 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
 
 3. **План отката** (ничего не меняет). В первой строке замените `<bucket>`, во второй — время из шага 2.
    Переменные `$bucket` и `$asOf` живут только в этом окне PowerShell: шаги 3–5 выполняйте в нём же
-   (в новом окне сначала снова выполните первые две строки и `cd C:\Users\Vadim\Dropbox\AI_WebForm_Route`):
+   (в новом окне сначала снова выполните первые три строки (`$bucket`, `$asOf`, `$env:AWS_PROFILE`) и `cd C:\Users\Vadim\Dropbox\AI_WebForm_Route`):
 
    ```powershell
    $bucket = "<bucket>"
