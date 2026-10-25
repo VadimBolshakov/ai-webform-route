@@ -28,9 +28,9 @@
 
 У регистратора домена создайте (или измените) запись:
 
-| Тип | Имя | Значение | TTL |
-|---|---|---|---|
-| A | `@` | IPv4 нового сервера | 300 |
+| Тип  | Имя | Значение                        | TTL |
+| ---- | --- | ------------------------------- | --- |
+| A    | `@` | IPv4 нового сервера             | 300 |
 | AAAA | `@` | IPv6 нового сервера (если есть) | 300 |
 
 Если сейчас `aramistrio.online` указывает на сервер с 3X-ui, после смены записи домен уйдёт на новый сервер.
@@ -159,12 +159,12 @@ FERNET_KEY=<сгенерированный>
 POSTGRES_PASSWORD=<сгенерированный>
 DATABASE_URL=postgresql+asyncpg://aichat:<тот же POSTGRES_PASSWORD>@db:5432/aichat
 OPENROUTER_API_KEY=<ключ с лимитом>
-AUTO_ALLOWED_MODELS=["openai/gpt-4o-mini","anthropic/claude-haiku-*","google/gemini-*-flash*"]
+AUTO_ALLOWED_MODELS=["openai/gpt-6-luna","anthropic/claude-haiku-5.5","google/gemini-3.8-flash"]
 DEFAULT_MONTHLY_LIMIT_USD=5
 ```
 
 - `COMPOSE_FILE` позволяет дальше писать просто `docker compose ...` — прод-переопределения подключатся сами.
-- `POSTGRES_PASSWORD` применяется только при **первом** создании базы. Менять его потом — через `ALTER USER` в psql.
+- **Заполните `.env` полностью до первого `docker compose up`.** `POSTGRES_PASSWORD` применяется только при **первом** создании тома базы; пароль в `DATABASE_URL` должен совпадать с ним символ в символ (используйте только буквы, цифры, `-`, `_`). Если база уже создалась со старым паролем, а данных в ней ещё нет — `docker compose down -v` и запуск заново. Если данные уже есть — смена через `docker compose exec db psql -U aichat -d aichat -c "ALTER USER aichat PASSWORD '…';"`, затем обновить `.env` и `docker compose up -d`.
 - `FERNET_KEY` шифрует секреты 2FA. Потеряете ключ — всем придётся заново настраивать 2FA. Сохраните копию `.env` в менеджере паролей.
 - `AUTO_ALLOWED_MODELS` — проверьте актуальные id моделей на openrouter.ai/models.
 
@@ -210,34 +210,48 @@ docker image prune -f
 
 ## 8. Бэкап (минимальный, до этапа 2)
 
-Скрипт `/opt/aichat-backup.sh`:
+Бэкап выполняется от вашего пользователя (он в группе `docker`), дампы лежат в `~/backups`.
 
 ```bash
+mkdir -p ~/backups && chmod 700 ~/backups
+cat > ~/aichat-backup.sh <<'EOF'
 #!/bin/sh
 set -e
-mkdir -p /var/backups/aichat
 cd /opt/aichat
-docker compose exec -T db pg_dump -U aichat -Fc aichat > /var/backups/aichat/aichat-$(date +%F).dump
-find /var/backups/aichat -name '*.dump' -mtime +7 -delete
+docker compose exec -T db pg_dump -U aichat -Fc aichat > "$HOME/backups/aichat-$(date +%F).dump"
+find "$HOME/backups" -name 'aichat-*.dump' -mtime +7 -delete
+EOF
+chmod 700 ~/aichat-backup.sh
+~/aichat-backup.sh && ls -lh ~/backups
 ```
 
+Каждую ночь в 03:30:
+
 ```bash
-sudo chmod 700 /opt/aichat-backup.sh
-sudo chmod 700 /var/backups 2>/dev/null; sudo mkdir -p /var/backups/aichat && sudo chmod 700 /var/backups/aichat
-echo '30 3 * * * root /opt/aichat-backup.sh' | sudo tee /etc/cron.d/aichat-backup
-sudo /opt/aichat-backup.sh && ls -lh /var/backups/aichat
+(crontab -l 2>/dev/null; echo '30 3 * * * $HOME/aichat-backup.sh >> $HOME/backups/backup.log 2>&1') | crontab -
+crontab -l
+```
+
+Проверка восстановления во временную базу (рабочая не затрагивается) — сделайте хотя бы раз:
+
+```bash
+docker compose exec -T db createdb -U aichat restore_test
+docker compose exec -T db pg_restore -U aichat -d restore_test < ~/backups/aichat-$(date +%F).dump
+docker compose exec -T db psql -U aichat -d restore_test -c "select count(*) from users;"
+docker compose exec -T db dropdb -U aichat restore_test
 ```
 
 Это копия **на том же сервере** — от сбоя диска или взлома она не спасёт. Пока нет этапа 2 (restic → S3 с шифрованием),
-раз в неделю забирайте последний дамп к себе и храните зашифрованным:
+раз в неделю забирайте дампы к себе. Команда запускается **на вашем компьютере** (PowerShell), не на сервере:
 
 ```bash
-scp vadim@aramistrio.online:/var/backups/aichat/aichat-$(date +%F).dump .
+scp "vadim@aramistrio.online:/home/vadim/backups/aichat-*.dump" C:\Users\Vadim\Documents\aichat-backups
 ```
 
-(файл принадлежит root — либо копируйте через `sudo cp` в домашнюю папку, либо запускайте cron от `vadim`, добавив его в группу `docker`).
+Если `Permission denied (publickey)` — `scp` берёт не тот ключ: укажите его через `-i` или в `~/.ssh/config`
+(`Host aramistrio.online`, `User vadim`, `IdentityFile ...`). В дампе вся переписка — храните его в зашифрованном месте, не в Dropbox.
 
-Восстановление (проверьте хотя бы раз):
+Полное восстановление рабочей базы из дампа (стирает текущие данные):
 
 ```bash
 docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists < aichat-ГГГГ-ММ-ДД.dump
@@ -256,12 +270,12 @@ docker compose restart app
 
 Требования: Германия/Нидерланды, 2 vCPU / 4 ГБ / 40 ГБ, IPv4, KVM, почасовая или помесячная оплата, ~€4–8 в месяц.
 
-| Провайдер | Плюсы | Минусы |
-|---|---|---|
-| **Hetzner Cloud** (CX-линейка, Фалькенштайн/Нюрнберг) | Лучшее соотношение цена/качество, быстрые NVMe, понятная панель, снапшоты и бэкапы в один клик, собственный S3 (Object Storage) для бэкапов этапа 2 | Строгая верификация при регистрации; оплата картой РФ не пройдёт |
-| **Netcup** (VPS / Root Server, Нюрнберг) | Очень дёшево за ресурсы, стабильно | Устаревшая панель, минимальный срок аренды на некоторых тарифах, верификация |
-| **DigitalOcean / Vultr** (Франкфурт, Амстердам) | Отличная документация, снапшоты, быстрый старт | Дороже аналогов в 1,5–2 раза |
-| **Aeza, VDSina, Timeweb Cloud** (локации в NL/DE) | Принимают оплату из РФ (в т. ч. СБП, криптовалюта) | Компании под юрисдикцией РФ (запросы данных); поддержка и стабильность заметно разнятся |
+| Провайдер                                             | Плюсы                                                                                                                                               | Минусы                                                                                  |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **Hetzner Cloud** (CX-линейка, Фалькенштайн/Нюрнберг) | Лучшее соотношение цена/качество, быстрые NVMe, понятная панель, снапшоты и бэкапы в один клик, собственный S3 (Object Storage) для бэкапов этапа 2 | Строгая верификация при регистрации; оплата картой РФ не пройдёт                        |
+| **Netcup** (VPS / Root Server, Нюрнберг)              | Очень дёшево за ресурсы, стабильно                                                                                                                  | Устаревшая панель, минимальный срок аренды на некоторых тарифах, верификация            |
+| **DigitalOcean / Vultr** (Франкфурт, Амстердам)       | Отличная документация, снапшоты, быстрый старт                                                                                                      | Дороже аналогов в 1,5–2 раза                                                            |
+| **Aeza, VDSina, Timeweb Cloud** (локации в NL/DE)     | Принимают оплату из РФ (в т. ч. СБП, криптовалюта)                                                                                                  | Компании под юрисдикцией РФ (запросы данных); поддержка и стабильность заметно разнятся |
 
 Если оплата иностранной картой доступна — Hetzner Cloud. Если нет — смотрите, где сейчас ваш текущий VPS с 3X-ui:
 раз он уже работает и оплачивается, тот же провайдер с тарифом 2/4/40 — самый простой вариант.
