@@ -372,26 +372,36 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
 Не запускайте перед этим ручной бэкап: свежий снапшот с испорченными данными вытеснил бы сегодняшний
 хороший при ротации.
 
-1. Сохраните текущую (испорченную) базу на всякий случай, остановите ночной бэкап и приложение,
-   восстановите снапшот:
+1. Сохраните текущую (испорченную) базу на всякий случай:
 
    ```bash
    cd /opt/aichat
-   docker compose exec -T db pg_dump -U aichat -Fc aichat > ~/before-restore-$(date +%F-%H%M).dump
+   F=~/before-restore-$(date +%F-%H%M).dump
+   docker compose exec -T db pg_dump -U aichat -Fc aichat > "$F" && test -s "$F" && echo "OK: копия создана: $F" || { rm -f "$F"; echo "ОШИБКА: копия не создана — не продолжайте"; }
    ls -lh ~/before-restore-*.dump
+   ```
+
+   Должна быть строка `OK: копия создана: …`, а у файла в списке `ls` — размер больше нуля (обычно
+   десятки КБ и больше). **Если напечатано `ОШИБКА` или любая другая ошибка — не продолжайте**: без этой
+   копии отменить восстановление будет нельзя. Запомните полное имя файла, например
+   `before-restore-2026-11-02-1530.dump`. В нём вся переписка: когда всё в порядке, удалите его:
+   `rm ~/before-restore-*.dump`.
+
+2. Только после `OK` — остановите ночной бэкап и приложение и восстановите снапшот:
+
+   ```bash
+   cd /opt/aichat
    sudo systemctl stop aichat-backup.timer
    docker compose stop app
    sudo -v
    sudo ops/backup/restic.sh dump <snapshot-id> /aichat.dump | docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction
    ```
 
-   - `ls` показывает имя сохранённого файла, например `before-restore-2026-11-02-1530.dump` — запомните его.
-     В нём вся переписка: когда всё в порядке, удалите его: `rm ~/before-restore-*.dump`.
    - `sudo -v` заранее спрашивает пароль sudo, чтобы запрос не смешался с выводом восстановления.
    - `--single-transaction`: восстановление выполняется целиком или не выполняется вовсе — при ошибке
      база остаётся как была.
 
-2. **Только если `pg_restore` не напечатал ошибок** — запустите приложение и ночной бэкап:
+3. **Только если `pg_restore` не напечатал ошибок** — запустите приложение и ночной бэкап:
 
    ```bash
    docker compose start app
@@ -399,9 +409,14 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
    sudo systemctl start aichat-backup.timer
    ```
 
-3. Если `pg_restore` напечатал ошибки, приложение не запускайте: попробуйте другой снапшот (команды
-   `sudo -v` и `sudo ops/backup/restic.sh dump …` из шага 1) или верните базу, какой она была до
-   восстановления (подставьте имя файла из `ls`):
+4. Если `pg_restore` напечатал ошибки, приложение не запускайте. Варианты:
+   - попробовать другой снапшот: команды `sudo -v` и `sudo ops/backup/restic.sh dump …` из шага 2;
+   - вернуть базу, какой она была до восстановления, — команды ниже; вместо `<дата-время>` подставьте
+     полное имя самого нового файла из списка `ls` шага 1 (например, `before-restore-2026-11-02-1530.dump`
+     → `~/before-restore-2026-11-02-1530.dump`).
+
+   Если вы прекращаете восстановление (и не возвращаете базу командами ниже) — верните хотя бы ночной
+   бэкап: `sudo systemctl start aichat-backup.timer`.
 
    ```bash
    cd /opt/aichat
@@ -474,7 +489,9 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
    `aichat-backup` на healthchecks.io (последний нормальный бэкап) и в консоли S3 у бакета переключатель
    **Show versions** (время удалений — у строк **Delete marker**).
 
-3. **План отката** (ничего не меняет). В первой строке замените `<bucket>`, во второй — время из шага 2:
+3. **План отката** (ничего не меняет). В первой строке замените `<bucket>`, во второй — время из шага 2.
+   Переменные `$bucket` и `$asOf` живут только в этом окне PowerShell: шаги 3–5 выполняйте в нём же
+   (в новом окне сначала снова выполните первые две строки и `cd C:\Users\Vadim\Dropbox\AI_WebForm_Route`):
 
    ```powershell
    $bucket = "<bucket>"
