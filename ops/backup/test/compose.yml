@@ -1,0 +1,115 @@
+# Тестовый стенд скриптов бэкапа: S3 (MinIO с версионированием), Postgres, фейковый healthchecks, runner.
+# Запуск — через tests/test_ops_backup.py. Вручную (из корня репозитория, Git Bash):
+#   export RESTIC_VERSION=$(cat ops/backup/RESTIC_VERSION)
+#   docker compose -f ops/backup/test/compose.yml up -d --build --wait
+#   docker compose -f ops/backup/test/compose.yml run --rm runner bash /work/ops/backup/test/run.sh [test_...]
+#   docker compose -f ops/backup/test/compose.yml down -v
+# Все пароли и ключи здесь — тестовые.
+name: aichat-backup-test
+
+x-runner-build: &runner-build
+  context: .
+  dockerfile: runner.Dockerfile
+  args:
+    RESTIC_VERSION: ${RESTIC_VERSION:?задайте RESTIC_VERSION из ops/backup/RESTIC_VERSION}
+
+services:
+  # Образы minio/minio и minio/mc больше не публикуются; pgsty/* — поддерживаемый сообществом форк MinIO.
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: aichat-test-key
+      MINIO_ROOT_PASSWORD: aichat-test-secret-0123456789
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  minio-init:
+    image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_t: http://aichat-test-key:aichat-test-secret-0123456789@minio:9000
+    # Остаётся запущенным: `up --wait` считает ошибкой вышедший контейнер; «healthy» = бакет готов.
+    init: true
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc mb --ignore-existing t/aichat-test && mc version enable t/aichat-test && touch /tmp/ready && exec sleep infinity"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aichat
+      POSTGRES_PASSWORD: aichat
+      POSTGRES_DB: aichat
+    configs:
+      - source: db-schema
+        target: /docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      # -h 127.0.0.1: во время init-скриптов сервер слушает только сокет, поэтому «готов» = схема создана.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "aichat", "-d", "aichat"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  hc:
+    build: *runner-build
+    image: aichat-backup-test-runner:local
+    command: ["python3", "/srv/hc_server.py"]
+    volumes:
+      - ./hc_server.py:/srv/hc_server.py:ro
+      - hc:/tmp/hc
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), 1)"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  runner:
+    build: *runner-build
+    image: aichat-backup-test-runner:local
+    profiles: ["runner"]
+    depends_on:
+      minio-init:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      hc:
+        condition: service_healthy
+    environment:
+      AICHAT_BACKUP_ENV: /work/test.env
+      RESTIC_PASSWORD_FILE: /work/test-password
+      AICHAT_STATE_DIR: /tmp/state
+      RESTIC_CMD: restic
+      PG_DUMP_CMD: pg_dump -h db -U aichat -Fc aichat
+      PSQL_CMD: psql -h db -U aichat -v ON_ERROR_STOP=1
+      PG_RESTORE_CMD: pg_restore -h db -U aichat
+      PGPASSWORD: aichat
+      # Тесты сетевых ошибок и неверных ключей не ждут 2 минуты повторов restic.
+      AICHAT_REPO_CHECK_TIMEOUT: "15"
+    # Монтируется только ops/ (read-only): /work — файловая система контейнера, поэтому
+    # /work/test-password создаётся внутри контейнера (права 600 работают, на хост ничего не пишется).
+    volumes:
+      - ../..:/work/ops:ro
+      - ./test.env:/work/test.env:ro
+      - hc:/tmp/hc
+
+configs:
+  db-schema:
+    content: |
+      CREATE TABLE users (id serial PRIMARY KEY);
+      CREATE TABLE alembic_version (version_num text NOT NULL);
+      INSERT INTO users DEFAULT VALUES;
+      INSERT INTO users DEFAULT VALUES;
+      INSERT INTO alembic_version VALUES ('test0001');
+
+volumes:
+  hc:
