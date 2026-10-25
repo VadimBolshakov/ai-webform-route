@@ -79,7 +79,8 @@ class OriginCheckMiddleware:
             return
         headers = {k.lower(): v for k, v in scope["headers"]}
         raw = headers.get(b"origin") or headers.get(b"referer")
-        if raw is None or _origin(raw.decode("latin-1")) != self.allowed:
+        # allowed is None (неразбираемый BASE_URL) — запрещаем всё, а не сравниваем None с None.
+        if self.allowed is None or raw is None or _origin(raw.decode("latin-1")) != self.allowed:
             await send(
                 {
                     "type": "http.response.start",

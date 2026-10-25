@@ -97,8 +97,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def http_exc(request: Request, exc: StarletteHTTPException):
         if exc.status_code == 404:
             return templates.TemplateResponse(request, "notfound.html", status_code=404)
-        if exc.status_code == 405 and is_private(request.url.path):
-            # Не раскрываем существование приватных маршрутов.
+        if exc.status_code == 405:
+            # Ни JSON FastAPI на ширме, ни существование приватных маршрутов не раскрываем.
             return templates.TemplateResponse(request, "notfound.html", status_code=404)
         return await http_exception_handler(request, exc)
 
@@ -111,7 +111,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def healthz():
         return {"ok": True}
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
     async def decoy(request: Request):
         return templates.TemplateResponse(
             request,

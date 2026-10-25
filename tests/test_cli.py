@@ -1,5 +1,7 @@
 """Admin recovery commands (python -m app.cli reset-2fa / reset-password)."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import func, select
 
@@ -22,6 +24,8 @@ async def test_reset_2fa(db):
     admin = await make_user(
         db, "root", "admin", totp_enabled=True, totp_secret_enc="enc", totp_last_step=123
     )
+    admin.failed_logins = 7
+    admin.locked_until = datetime.now(UTC) + timedelta(minutes=30)
     other = await make_user(db, "bob")
     await create_session(db, admin, "1.1.1.1", "ua")
     await create_session(db, admin, "1.1.1.2", "ua", totp_pending=True)
@@ -31,6 +35,7 @@ async def test_reset_2fa(db):
     await cli.reset_2fa(db, " Root ")
     await db.refresh(admin)
     assert (admin.totp_enabled, admin.totp_secret_enc, admin.totp_last_step) == (False, None, None)
+    assert (admin.failed_logins, admin.locked_until) == (0, None)
     assert await _sessions(db, admin.id) == 0
     assert await _sessions(db, other.id) == 1
     row = (await db.execute(select(AuditLog).where(AuditLog.event == "totp_reset"))).scalar_one()
@@ -42,6 +47,8 @@ async def test_reset_2fa(db):
 
 async def test_reset_password(db):
     admin = await make_user(db, "root", "admin")
+    admin.failed_logins = 6
+    admin.locked_until = datetime.now(UTC) + timedelta(minutes=30)
     await create_session(db, admin, "1.1.1.1", "ua")
     await db.commit()
 
@@ -56,6 +63,7 @@ async def test_reset_password(db):
     await cli.reset_password(db, "root", NEW_PW)
     await db.refresh(admin)
     assert verify_password(admin.password_hash, NEW_PW)
+    assert (admin.failed_logins, admin.locked_until) == (0, None)
     assert await _sessions(db, admin.id) == 0
     row = (
         await db.execute(select(AuditLog).where(AuditLog.event == "password_reset"))

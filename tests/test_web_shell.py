@@ -118,6 +118,10 @@ async def test_require_csrf():
         "ftp://example.com",
         "example.com",
         "https://",
+        "https://example.com:99999",  # порт вне диапазона
+        "https://example.com:abc",
+        "https://user:pw@example.com",  # без userinfo
+        "https://user@example.com",
     ],
 )
 def test_base_url_rejected(settings, url):
@@ -156,7 +160,7 @@ async def test_origin_with_explicit_default_port_allowed(settings):
     application = create_app(s)
     async with AsyncClient(transport=ASGITransport(app=application), base_url=s.base_url) as c:
         r = await c.post("/healthz", headers={"Origin": "https://chat.example:443"})
-        assert r.status_code == 405  # прошло проверку Origin, маршрут только GET
+        assert r.status_code == 404  # прошло проверку Origin; 405 маскируется под 404
         r = await c.post("/healthz", headers={"Origin": "https://chat.example:444"})
         assert r.status_code == 403
     await application.state.engine.dispose()
@@ -172,3 +176,30 @@ def test_title_model_default_and_not_empty(settings, monkeypatch):
         Settings(**base, title_model="", _env_file=None)
     monkeypatch.setenv("TITLE_MODEL", "")  # пустая строка в .env → значение по умолчанию
     assert Settings(**base, _env_file=None).title_model == "openai/gpt-4o-mini"
+
+
+def test_origin_check_denies_all_when_allowed_unparseable():
+    from app.security.headers import OriginCheckMiddleware
+
+    mw = OriginCheckMiddleware(app=None, base_url="https://example.com:abc")
+    assert mw.allowed is None
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    import asyncio
+
+    scope = {"type": "http", "method": "POST", "headers": [(b"origin", b"https://x:abc")]}
+    asyncio.run(mw(scope, None, send))
+    assert sent[0]["status"] == 403
+
+
+async def test_decoy_answers_head_and_hides_framework(client):
+    r = await client.head("/")
+    assert r.status_code == 200 and r.content == b""
+    ref = (await client.get("/nonexistent")).content
+    for method in ("post", "put", "delete"):
+        r = await client.request(method.upper(), "/", headers={"Origin": "https://localhost:8443"})
+        assert r.status_code == 404 and r.content == ref
+    assert "server" not in {k.lower() for k in (await client.get("/")).headers}

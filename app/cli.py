@@ -53,6 +53,8 @@ async def reset_2fa(db: AsyncSession, username: str) -> User:
     user.totp_enabled = False
     user.totp_secret_enc = None
     user.totp_last_step = None
+    user.failed_logins = 0
+    user.locked_until = None
     await revoke_all(db, user.id)
     await audit(db, "totp_reset", user, "cli")
     await db.commit()
@@ -66,6 +68,8 @@ async def reset_password(db: AsyncSession, username: str, password: str) -> User
         await db.rollback()
         raise ValueError("; ".join(errors))
     user.password_hash = await asyncio.to_thread(hash_password, password)
+    user.failed_logins = 0
+    user.locked_until = None
     await revoke_all(db, user.id)
     await audit(db, "password_reset", user, "cli")
     await db.commit()

@@ -109,3 +109,16 @@ async def test_messages_endpoint_accepts_large_multipart(app, client, db, monkey
     assert "error" not in [n for n, _ in events(r.text)]
     assert len(llm.calls) == 1
     await drain_background(app)
+
+
+async def test_duplicate_content_type_rejected(client, form_spy, ref404):
+    # Первый заголовок (его читает Starlette) — multipart, последний — безобидный.
+    dup = [
+        ("content-type", "multipart/form-data; boundary=x"),
+        ("content-type", "text/plain"),
+    ]
+    r = await client.post("/a/test-login-token", content=b"--x--\r\n", headers=dup)
+    assert r.status_code == 404 and r.content == ref404
+    r = await client.post("/healthz", content=b"--x--\r\n", headers=dup)
+    assert r.status_code == 415
+    assert form_spy == []

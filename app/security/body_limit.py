@@ -45,7 +45,14 @@ class BodyLimitMiddleware:
         await response(scope, receive, send)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or _exempt(scope):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        # Несколько Content-Type: middleware и Starlette могли бы прочитать разные значения.
+        if sum(1 for k, _ in scope["headers"] if k.lower() == b"content-type") > 1:
+            await self._reject(scope, receive, send, 415)
+            return
+        if _exempt(scope):
             await self.app(scope, receive, send)
             return
         headers = {k.lower(): v for k, v in scope["headers"]}

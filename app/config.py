@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     def _check_base_url(cls, value: str) -> str:
         """Только origin: https (http — лишь для localhost), без пути, query и фрагмента."""
         parts = urlsplit(value)
+        try:
+            _ = parts.port  # порт вне 0..65535 или не число -> ValueError
+        except ValueError:
+            raise ValueError("BASE_URL: некорректный порт") from None
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("BASE_URL: без логина и пароля в адресе")
         if parts.scheme not in ("https", "http") or not parts.hostname:
             raise ValueError("BASE_URL: нужен абсолютный URL вида https://host[:port]")
         if parts.scheme == "http" and parts.hostname not in LOCAL_HOSTS:
