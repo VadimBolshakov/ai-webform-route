@@ -5,6 +5,7 @@
 #   docker compose -f ops/backup/test/compose.yml run --rm runner bash /work/ops/backup/test/run.sh [test_...]
 #   docker compose -f ops/backup/test/compose.yml down -v
 # Все пароли и ключи здесь — тестовые.
+# Имя проекта — для ручного запуска; pytest задаёт уникальное (-p aichat-backup-test-<uuid>).
 name: aichat-backup-test
 
 x-runner-build: &runner-build

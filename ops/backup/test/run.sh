@@ -27,7 +27,7 @@ fail() { echo "  assert: $*" >&2; return 1; }
 reset_env() {
     mc rm --recursive --versions --force "t/$BUCKET" >/dev/null 2>&1 || true
     [[ -z "$(mc ls --versions --recursive "t/$BUCKET")" ]] || fail "бакет не очищен"
-    rm -f "$RESTIC_PASSWORD_FILE"
+    rm -f "$RESTIC_PASSWORD_FILE" "$RESTIC_PASSWORD_FILE.tmp"
     rm -rf "$AICHAT_STATE_DIR" "${HOME:-/root}/.cache/restic" "$OUT"
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
 }
@@ -54,6 +54,18 @@ run_lib() {
 rc_of() { local rc=0; "$@" || rc=$?; echo "$rc"; }
 
 hc_paths() { jq -r .path "$HC_LOG"; }
+
+# assert_no_secrets <file> — в файле нет ни настоящего, ни подставленного в тестах неверного ключа AWS,
+# ни пароля репозитория (если файл пароля есть).
+assert_no_secrets() {
+    local file=$1 secret pw=""
+    # shellcheck source=/dev/null
+    secret=$(set -a; . "$AICHAT_BACKUP_ENV"; printf '%s' "$AWS_SECRET_ACCESS_KEY")
+    [[ -s "$RESTIC_PASSWORD_FILE" ]] && pw=$(cat "$RESTIC_PASSWORD_FILE")
+    ! grep -qF "$secret" "$file" || fail "в выводе ключ AWS"
+    ! grep -qF wrong-secret "$file" || fail "в выводе неверный ключ AWS"
+    [[ -z "$pw" ]] || ! grep -qF "$pw" "$file" || fail "в выводе пароль репозитория"
+}
 
 # --- тесты: init-repo.sh и lib.sh ------------------------------------------
 
@@ -85,6 +97,31 @@ test_init_fails_on_access_error() {
         || { cat "$OUT"; fail "init с неверным ключом не упал"; }
     grep -q "Нет доступа к репозиторию" "$OUT" || { cat "$OUT"; fail "нет текста об ошибке доступа"; }
     [[ -z "$(mc ls --recursive "t/$BUCKET")" ]] || fail "init что-то записал в бакет"
+    assert_no_secrets "$OUT"
+}
+
+test_init_bad_env_leaves_no_password() {
+    local rc
+    rc=$(rc_of env AICHAT_BACKUP_ENV=/nonexistent bash -c "bash '$BACKUP_DIR/init-repo.sh' >'$OUT' 2>&1")
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "init без env-файла: код $rc"; }
+    grep -q "Нет /nonexistent" "$OUT" || { cat "$OUT"; fail "нет текста об отсутствии env-файла"; }
+
+    local env=/tmp/no-repo.env
+    grep -v '^RESTIC_REPOSITORY=' "$AICHAT_BACKUP_ENV" >"$env"
+    rc=$(rc_of env AICHAT_BACKUP_ENV="$env" bash -c "bash '$BACKUP_DIR/init-repo.sh' >>'$OUT' 2>&1")
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "init без RESTIC_REPOSITORY: код $rc"; }
+    grep -q "не задан RESTIC_REPOSITORY" "$OUT" || { cat "$OUT"; fail "нет текста о RESTIC_REPOSITORY"; }
+
+    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "остался файл пароля"
+    ! grep -q "Сохраните пароль" "$OUT" || fail "просьба сохранить несуществующий пароль"
+}
+
+test_init_ignores_stale_tmp() {
+    printf 'stale\n' >"$RESTIC_PASSWORD_FILE.tmp"
+    run_script init-repo.sh || { cat "$OUT"; fail "init-repo.sh со старым .tmp упал"; }
+    [[ "$(cat "$RESTIC_PASSWORD_FILE")" != stale ]] || fail "использовано содержимое старого .tmp"
+    [[ ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail ".tmp не удалён"
+    [[ "$(stat -c %a "$RESTIC_PASSWORD_FILE")" == 600 ]] || fail "права пароль-файла не 600"
 }
 
 test_repo_exists_distinguishes_network_error() {
@@ -101,6 +138,25 @@ test_repo_exists_distinguishes_network_error() {
     run_lib 'load_env; AWS_SECRET_ACCESS_KEY=wrong-secret repo_exists || echo "rc=$? $REPO_EXISTS_ERROR"' || true
     grep -q '^rc=2 restic не ответил за 15 с (сеть или S3 недоступны?): Stat: The request signature' "$OUT" \
         || { cat "$OUT"; fail "неверный ключ: ожидался код 2 и текст ошибки S3"; }
+    assert_no_secrets "$OUT"
+}
+
+test_repo_exists_classification() {
+    use_test_password
+    # «Is there a repository…» без кода 10 и без «repository does not exist» — не «репозитория нет».
+    local rc
+    rc=$(rc_of run_lib "load_env; RESTIC_CMD=\"sh -c 'echo \\\"Is there a repository at the following location?\\\" >&2; exit 1' x\" repo_exists")
+    [[ "$rc" == 2 ]] || { cat "$OUT"; fail "«Is there a repository» без кода 10: ожидался 2, получен $rc"; }
+    rc=$(rc_of run_lib "load_env; RESTIC_CMD=\"sh -c 'echo \\\"Fatal: repository does not exist: x\\\" >&2; exit 1' x\" repo_exists")
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "«repository does not exist»: ожидался 1, получен $rc"; }
+    rc=$(rc_of run_lib "load_env; RESTIC_CMD=\"sh -c 'exit 10' x\" repo_exists")
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код 10: ожидался 1, получен $rc"; }
+
+    # Таймаут проверяется до подстановки в eval.
+    rc=$(rc_of run_lib "load_env; AICHAT_REPO_CHECK_TIMEOUT='1; touch /tmp/pwned;' repo_exists")
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "нечисловой таймаут принят"; }
+    grep -q "AICHAT_REPO_CHECK_TIMEOUT должен быть целым числом" "$OUT" || { cat "$OUT"; fail "нет текста о таймауте"; }
+    [[ ! -e /tmp/pwned ]] || fail "таймаут выполнен как код"
 }
 
 test_hc_ping_paths() {
@@ -112,7 +168,25 @@ test_hc_ping_paths() {
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     run_lib "hc_ping $HC_URL/ fail \"\$(printf 'x%.0s' {1..3000})\"" || { cat "$OUT"; fail "длинное тело"; }
     [[ "$(hc_paths)" == /fail ]] || { cat "$HC_LOG"; fail "путь при URL со слэшем"; }
-    [[ "$(jq -r '.body | length' "$HC_LOG")" == 1024 ]] || { cat "$HC_LOG"; fail "тело не обрезано до 1024 байт"; }
+    [[ "$(jq -r '.size' "$HC_LOG")" == 1024 ]] || { cat "$HC_LOG"; fail "тело не обрезано до 1024 байт"; }
+
+    # Многобайтовое тело (2000 байт UTF-8) в UTF-8-локали: отправлено не больше 1024 байт.
+    curl -fsS -X POST "$HC_URL/reset" >/dev/null
+    run_lib "export LC_ALL=C.UTF-8; hc_ping $HC_URL fail \"\$(printf 'я%.0s' {1..1000})\"" \
+        || { cat "$OUT"; fail "многобайтовое тело"; }
+    local size
+    size=$(jq -r '.size' "$HC_LOG")
+    [[ "$size" =~ ^[0-9]+$ ]] || { cat "$HC_LOG"; fail "нет размера тела"; }
+    ((size > 0 && size <= 1024)) || { cat "$HC_LOG"; fail "отправлено $size байт"; }
+}
+
+test_hc_ping_rejects_bad_url() {
+    run_lib "hc_ping 'http://hc:8080/x\"y' start; hc_ping 'http://hc:8080/x\\y' ok; echo rc=\$?" \
+        || { cat "$OUT"; fail "hc_ping с плохим URL вернул ошибку"; }
+    [[ "$(grep -c '^aichat-backup: healthchecks: недопустимые символы в URL, пинг пропущен$' "$OUT")" == 2 ]] \
+        || { cat "$OUT"; fail "нет предупреждений"; }
+    grep -q '^rc=0$' "$OUT" || fail "код не 0"
+    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "был запрос к hc"; }
 }
 
 test_hc_ping_unreachable_ok() {

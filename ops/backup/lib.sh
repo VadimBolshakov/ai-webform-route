@@ -29,12 +29,18 @@ die() {
 }
 
 # Загружает /etc/aichat/restic.env (KEY=VALUE без кавычек) и экспортирует переменные.
-load_env() {
+load_env_file() {
     [[ -f "$AICHAT_BACKUP_ENV" ]] || die "Нет $AICHAT_BACKUP_ENV"
     set -a
     # shellcheck source=/dev/null
-    . "$AICHAT_BACKUP_ENV"
+    . "$AICHAT_BACKUP_ENV" || die "Не удалось прочитать $AICHAT_BACKUP_ENV"
     set +a
+    [[ -n "${RESTIC_REPOSITORY:-}" ]] || die "В $AICHAT_BACKUP_ENV не задан RESTIC_REPOSITORY"
+}
+
+# load_env_file + проверка, что файл пароля репозитория есть и не пуст.
+load_env() {
+    load_env_file
     [[ -s "$RESTIC_PASSWORD_FILE" ]] || die "Нет файла пароля репозитория $RESTIC_PASSWORD_FILE (или он пуст)"
 }
 
@@ -44,7 +50,8 @@ db_dump() { eval "$PG_DUMP_CMD"; }
 db_psql() { eval "$PSQL_CMD"' "$@"'; }
 db_restore() { eval "$PG_RESTORE_CMD"' "$@"'; }
 
-# repo_exists: 0 — репозиторий есть; 1 — restic сообщил, что репозитория нет; 2 — другая ошибка
+# repo_exists: 0 — репозиторий есть; 1 — restic сообщил, что репозитория нет (код 10 или текст
+# «repository does not exist»); 2 — другая ошибка
 # (сеть, ключи, пароль). Вывод restic не печатает; при 1 и 2 текст ошибки — в REPO_EXISTS_ERROR.
 # При сетевых ошибках и неверных ключах restic повторяет запрос до 15 минут, поэтому проверка
 # ограничена AICHAT_REPO_CHECK_TIMEOUT секундами (по умолчанию 120); истечение — код 2.
@@ -54,6 +61,8 @@ REPO_EXISTS_ERROR=""
 # shellcheck disable=SC2034  # присваивание REPO_EXISTS_ERROR внутри функции
 repo_exists() {
     local rc=0 out retry
+    [[ "$AICHAT_REPO_CHECK_TIMEOUT" =~ ^[0-9]+$ ]] \
+        || die "AICHAT_REPO_CHECK_TIMEOUT должен быть целым числом секунд"
     out=$(eval "timeout $AICHAT_REPO_CHECK_TIMEOUT $RESTIC_CMD cat config" 2>&1 >/dev/null </dev/null) || rc=$?
     REPO_EXISTS_ERROR=$out
     if ((rc == 0)); then
@@ -65,8 +74,7 @@ repo_exists() {
         REPO_EXISTS_ERROR="restic не ответил за $AICHAT_REPO_CHECK_TIMEOUT с (сеть или S3 недоступны?)${retry:+: $retry}"
         return 2
     fi
-    if ((rc == 10)) || [[ "$out" == *"repository does not exist"* ]] \
-        || [[ "$out" == *"Is there a repository at the following location"* ]]; then
+    if ((rc == 10)) || [[ "$out" == *"repository does not exist"* ]]; then
         return 1
     fi
     return 2
@@ -78,6 +86,11 @@ hc_ping() {
     local url=${1:-} suffix=${2:-} body=${3-} target rc=0
     if [[ -z "$url" ]]; then
         log "healthchecks: URL не задан, пинг пропущен"
+        return 0
+    fi
+    # URL попадает в конфиг curl в кавычках: кавычка, обратный слэш и перевод строки недопустимы.
+    if [[ "$url" == *[\"\\]* || "$url" == *$'\n'* ]]; then
+        log "healthchecks: недопустимые символы в URL, пинг пропущен"
         return 0
     fi
     url=${url%/}

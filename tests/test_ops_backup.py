@@ -5,6 +5,7 @@ healthchecks. Без Docker тест пропускается. Отдельны�
 import os
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BACKUP_DIR = ROOT / "ops" / "backup"
 COMPOSE = BACKUP_DIR / "test" / "compose.yml"
-PROJECT = "aichat-backup-test"
 
 
 def _docker_available() -> bool:
@@ -33,7 +33,9 @@ def test_backup_scripts():
         "RESTIC_VERSION": (BACKUP_DIR / "RESTIC_VERSION").read_text().strip(),
         "MSYS_NO_PATHCONV": "1",
     }
-    compose = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE)]
+    # Уникальный проект: параллельные или оставшиеся прогоны не мешают друг другу, down -v — только свой.
+    project = f"aichat-backup-test-{uuid.uuid4().hex[:8]}"
+    compose = ["docker", "compose", "-p", project, "-f", str(COMPOSE)]
     selected = os.environ.get("AICHAT_BACKUP_TESTS", "").split()
     try:
         subprocess.run(
