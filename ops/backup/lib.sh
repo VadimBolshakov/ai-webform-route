@@ -153,3 +153,88 @@ error_text() {
     local LC_ALL=C
     printf '%s' "${line:0:1024}"
 }
+
+# iso_to_epoch <время RFC3339> — эпоха; доли секунды (restic пишет наносекунды) и смещение пояса допустимы.
+iso_to_epoch() {
+    local t=$1
+    if [[ "$t" =~ ^(.*:[0-9]{2})\.[0-9]+(.*)$ ]]; then t=${BASH_REMATCH[1]}${BASH_REMATCH[2]}; fi
+    date -u -d "$t" +%s 2>/dev/null
+}
+
+# now_iso — now_epoch как UTC-время вида 2026-01-01T03:30:00Z.
+now_iso() { date -u -d "@$(now_epoch)" +%Y-%m-%dT%H:%M:%SZ; }
+
+# --- каркас скрипта с отчётом (backup.sh, restore-test.sh) -------------------------------------
+# Скрипт до вызова этих функций задаёт: STATUS_FILE (имя в $AICHAT_STATE_DIR), PING_URL_VAR (имя
+# переменной с URL пинга, например HC_BACKUP_URL), INTERRUPTED (текст ошибки при сигнале),
+# функцию status_error <текст> (печатает JSON статуса с ошибкой) и, после load_env_or_report,
+# каталог WORK для вывода шагов (mktemp -d — права 700). Функции — с вырезанием секретов (redact).
+# shellcheck disable=SC2034  # REPORTED и SIG_RC читают и меняют вызывающие скрипты
+REPORTED=0 # итог (статус + пинг) уже отправлен
+# shellcheck disable=SC2034
+SIG_RC=0 # пришёл SIGTERM/SIGINT (143/130); проверяется после каждого шага
+
+# Ошибка env-файла или пароля: URL пинга неизвестен — только журнал и статус (старый «ok» не остаётся).
+# Иначе загружает окружение в текущий shell.
+load_env_or_report() {
+    local env_err
+    if ! env_err=$( (load_env) 2>&1 >/dev/null); then
+        printf '%s\n' "$env_err" >&2
+        env_err=$(error_text last "$env_err")
+        write_status "$STATUS_FILE" "$(status_error "${env_err#aichat-backup: }")" \
+            || log "Не удалось записать $STATUS_FILE"
+        exit 1
+    fi
+    load_env
+}
+
+# report_error <текст без секретов> — статус с ошибкой и пинг /fail.
+report_error() {
+    # shellcheck disable=SC2034  # REPORTED читает trap EXIT вызывающего скрипта
+    REPORTED=1
+    write_status "$STATUS_FILE" "$(status_error "$1")" || log "Не удалось записать $STATUS_FILE"
+    hc_ping "${!PING_URL_VAR:-}" fail "$1"
+}
+
+# fail <текст без секретов> — ошибка запуска: журнал, статус, пинг, выход 1 (текст ≤ 1024 байт).
+fail() {
+    local LC_ALL=C
+    local msg=${1:0:1024}
+    log "Ошибка: $msg"
+    report_error "$msg"
+    exit 1
+}
+
+# Сигнал только отмечается: текущий шаг завершается, затем скрипт сообщает об ошибке (check_signal).
+trap_signals() {
+    trap 'SIG_RC=143' TERM
+    trap 'SIG_RC=130' INT
+}
+# Для trap EXIT: повторный сигнал не должен прервать запись статуса и пинг /fail.
+ignore_signals() { trap '' TERM INT; }
+
+check_signal() {
+    ((SIG_RC == 0)) || fail "$INTERRUPTED"
+}
+
+# emit <file> — содержимое файла без секретов.
+emit() {
+    local text
+    text=$(<"$1")
+    [[ -z "$text" ]] || printf '%s\n' "$(redact "$text")"
+}
+
+# step <название> <команда...> — stdout и stderr команды (в $WORK/out и $WORK/err) — в журнал без
+# секретов (stdout — если не STEP_SHOW_OUT=0); при ошибке — fail с последней содержательной строкой stderr.
+step() {
+    local name=$1 rc=0 msg
+    shift
+    "$@" >"$WORK/out" 2>"$WORK/err" </dev/null || rc=$?
+    if [[ "${STEP_SHOW_OUT:-1}" != 0 ]]; then emit "$WORK/out"; fi
+    emit "$WORK/err" >&2
+    check_signal
+    if ((rc != 0)); then
+        msg=$(error_text last "$(<"$WORK/err")")
+        fail "$name: ${msg:-код выхода $rc}"
+    fi
+}

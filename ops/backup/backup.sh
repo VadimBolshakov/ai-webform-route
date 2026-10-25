@@ -8,8 +8,8 @@ set -euo pipefail
 # shellcheck source=ops/backup/lib.sh
 . "$(dirname "$0")/lib.sh"
 
-REPORTED=0        # итог (status.json + пинг) уже отправлен
-SIG_RC=0          # пришёл SIGTERM/SIGINT (143/130); проверяется после каждого шага
+STATUS_FILE=status.json
+PING_URL_VAR=HC_BACKUP_URL
 ACCEPTED=0        # снапшот этого запуска принят как результат бэкапа
 PARTIAL_HANDLED=0 # удаление непринятого снапшота уже выполнялось
 FORGET_ERR=""     # текст ошибки этого удаления (без секретов)
@@ -18,7 +18,7 @@ size_bytes=""
 
 # status_json <result> <snapshot> <size_bytes> <error> — пустые значения → null.
 status_json() {
-    jq -nc --arg time "$(date -u -d "@$(now_epoch)" +%Y-%m-%dT%H:%M:%SZ)" --arg result "$1" \
+    jq -nc --arg time "$(now_iso)" --arg result "$1" \
         --arg snapshot "$2" --arg size "$3" --argjson duration "$SECONDS" --arg error "$4" \
         '{time: $time, result: $result,
           snapshot: (if $snapshot == "" then null else $snapshot end),
@@ -27,41 +27,12 @@ status_json() {
           error: (if $error == "" then null else $error end)}'
 }
 
-# Ошибка env-файла или пароля: URL пинга неизвестен — только журнал и status.json (старый «ok» не остаётся).
-if ! env_err=$( (load_env) 2>&1 >/dev/null); then
-    printf '%s\n' "$env_err" >&2
-    env_err=$(error_text last "$env_err")
-    write_status status.json "$(status_json error "" "" "${env_err#aichat-backup: }")" \
-        || log "Не удалось записать status.json"
-    exit 1
-fi
-load_env
+status_error() { status_json error "" "" "$1"; }
+
+load_env_or_report
 
 # Каталог для вывода шагов (mktemp -d — права 700); удаляется при любом выходе.
 WORK=$(mktemp -d)
-
-# report_error <текст без секретов> — status.json с ошибкой и пинг /fail.
-report_error() {
-    REPORTED=1
-    write_status status.json "$(status_json error "" "" "$1")" || log "Не удалось записать status.json"
-    hc_ping "${HC_BACKUP_URL:-}" fail "$1"
-}
-
-# fail <текст без секретов> — ошибка запуска: журнал, статус, пинг, выход 1 (текст ≤ 1024 байт).
-fail() {
-    local LC_ALL=C
-    local msg=${1:0:1024}
-    log "Ошибка: $msg"
-    report_error "$msg"
-    exit 1
-}
-
-# emit <file> — содержимое файла без секретов.
-emit() {
-    local text
-    text=$(<"$1")
-    [[ -z "$text" ]] || printf '%s\n' "$(redact "$text")"
-}
 
 # parse_summary — snapshot_id и size_bytes из итоговой JSON-строки restic backup (если она есть).
 parse_summary() {
@@ -88,14 +59,10 @@ forget_partial() {
 }
 
 INTERRUPTED="Бэкап прерван сигналом (таймаут/остановка)"
-check_signal() {
-    ((SIG_RC == 0)) || fail "$INTERRUPTED"
-}
 
 on_exit() {
     local rc=$?
-    # Повторный сигнал не должен прервать запись статуса и пинг /fail.
-    trap '' TERM INT
+    ignore_signals
     # Страховка: снапшот этого запуска, не принятый как результат, не должен стать latest.
     if ((!ACCEPTED && !PARTIAL_HANDLED)); then
         parse_summary || true
@@ -108,23 +75,7 @@ on_exit() {
 }
 trap on_exit EXIT
 # Сигнал только отмечается: текущий шаг завершается, затем — удаление неполного снапшота и ошибка.
-trap 'SIG_RC=143' TERM
-trap 'SIG_RC=130' INT
-
-# step <название> <команда...> — stdout и stderr команды — в журнал без секретов;
-# при ошибке — fail с последней содержательной строкой stderr.
-step() {
-    local name=$1 rc=0 msg
-    shift
-    "$@" >"$WORK/out" 2>"$WORK/err" </dev/null || rc=$?
-    emit "$WORK/out"
-    emit "$WORK/err" >&2
-    check_signal
-    if ((rc != 0)); then
-        msg=$(error_text last "$(<"$WORK/err")")
-        fail "$name: ${msg:-код выхода $rc}"
-    fi
-}
+trap_signals
 
 hc_ping "${HC_BACKUP_URL:-}" start
 
