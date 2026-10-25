@@ -6,17 +6,24 @@
 
 Без --apply печатается только план. Состояние ключа на момент as_of — самый свежий элемент
 (версия объекта или delete marker) с LastModified <= as_of:
-  версия объекта -> восстановить (если она не текущая), delete marker или ничего -> ключа не было.
-Коды выхода: 0 — успех, 2 — отказ (нет версионирования / нет прав), 1 — прочие ошибки.
+  версия объекта -> восстановить (если текущая версия не совпадает с ней по ETag и размеру),
+  delete marker или ничего -> ключа не было.
+Поэтому повторный запуск после --apply показывает, что делать больше нечего.
+Lifecycle бакета удаляет старые версии через 30 дней: более ранний as_of — только с --force-old.
+Коды выхода: 0 — успех, 2 — отказ (нет версионирования / нет прав / as_of старше 30 дней),
+1 — прочие ошибки.
 Зависимость: boto3 (только у владельца; приложение его не использует).
 """
 
 import argparse
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 # Размер страницы list_object_versions (подменяется в тестах).
 PAGE_SIZE = 1000
+
+# Некактуальные версии lifecycle удаляет через столько дней (aws/lifecycle.json).
+RETENTION_DAYS = 30
 
 # Action = (kind: "restore" | "delete" | "keep", key, version_id | None)
 Action = tuple[str, str, str | None]
@@ -61,7 +68,8 @@ def check_versioning(s3, bucket: str) -> None:
 
 
 def _iter_entries(s3, bucket: str, prefix: str):
-    """Все версии и delete markers под prefix: (key, is_marker, last_modified, is_latest, vid, pos)."""
+    """Все версии и delete markers под prefix:
+    (key, is_marker, last_modified, is_latest, vid, pos, etag, size); у markers etag и size — None."""
     pos = 0
     kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": PAGE_SIZE}
     while True:
@@ -86,6 +94,8 @@ def _iter_entries(s3, bucket: str, prefix: str):
                     it["IsLatest"],
                     it["VersionId"],
                     pos,
+                    it.get("ETag"),
+                    it.get("Size"),
                 )
                 pos += 1
         if not page.get("IsTruncated"):
@@ -107,31 +117,62 @@ def plan_restore(s3, bucket: str, prefix: str, as_of: datetime) -> list[Action]:
     actions: list[Action] = []
     for key in sorted(by_key):
         entries = by_key[key]
-        current_exists = any(e[3] and not e[1] for e in entries)
+        current = next((e for e in entries if e[3] and not e[1]), None)
         # При равных LastModified (секундная точность) новее текущая версия, затем та, что
         # раньше в ответе S3 (он отдаёт новые первыми); версии и markers приходят раздельно.
         at_as_of = [e for e in entries if e[2] <= as_of]
         target = max(at_as_of, key=lambda e: (e[2], e[3], -e[5]), default=None)
         if target is None or target[1]:
             # На момент as_of ключа не было (не существовал или был удалён).
-            actions.append(("delete", key, None) if current_exists else ("keep", key, None))
-        elif target[3]:
+            actions.append(("delete", key, None) if current else ("keep", key, None))
+        elif target[3] or (
+            current is not None and (current[6], current[7]) == (target[6], target[7])
+        ):
+            # Целевая версия текущая или текущая — её копия (например, после --apply).
             actions.append(("keep", key, target[4]))
         else:
             actions.append(("restore", key, target[4]))
     return actions
 
 
-def apply_actions(s3, bucket: str, actions: list[Action]) -> None:
-    for kind, key, version_id in actions:
-        if kind == "restore":
-            s3.copy_object(
-                Bucket=bucket,
-                Key=key,
-                CopySource={"Bucket": bucket, "Key": key, "VersionId": version_id},
-            )
-        elif kind == "delete":
-            s3.delete_object(Bucket=bucket, Key=key)
+class ApplyError(Exception):
+    """Ошибка посреди --apply: какие ключи уже обработаны."""
+
+    def __init__(self, key: str, done: list[str], total: int, cause: Exception):
+        super().__init__(str(cause))
+        self.key, self.done, self.total, self.cause = key, done, total, cause
+
+    def __str__(self) -> str:
+        lines = [
+            f"ключ {self.key}: {self.cause}",
+            f"Выполнено {len(self.done)} из {self.total} действий до ошибки.",
+        ]
+        if self.done:
+            lines.append("Уже обработаны: " + ", ".join(self.done))
+        lines.append("Запустите ту же команду снова: обработанные ключи будут «без изменений».")
+        return "\n".join(lines)
+
+
+def apply_actions(s3, bucket: str, actions: list[Action], progress=None) -> None:
+    """Выполняет restore/delete; progress(line) вызывается после каждого ключа."""
+    todo = [a for a in actions if a[0] != "keep"]
+    done: list[str] = []
+    for i, (kind, key, version_id) in enumerate(todo, 1):
+        try:
+            if kind == "restore":
+                s3.copy_object(
+                    Bucket=bucket,
+                    Key=key,
+                    CopySource={"Bucket": bucket, "Key": key, "VersionId": version_id},
+                )
+            else:
+                s3.delete_object(Bucket=bucket, Key=key)
+        except Exception as exc:
+            raise ApplyError(key, done, len(todo), exc) from exc
+        done.append(key)
+        if progress is not None:
+            label = "восстановлено" if kind == "restore" else "удалено"
+            progress(f"[{i}/{len(todo)}] {label} {key}")
 
 
 def format_plan(actions: list[Action]) -> str:
@@ -157,7 +198,7 @@ def make_client(profile: str | None, region: str):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Откат S3-бакета с версионированием на момент времени.")
     p.add_argument("--bucket", required=True, help="имя бакета")
-    p.add_argument("--prefix", default="", help="префикс ключей (например aichat/)")
+    p.add_argument("--prefix", default="aichat/", help="префикс ключей (по умолчанию aichat/)")
     p.add_argument(
         "--as-of",
         required=True,
@@ -165,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='момент отката, ISO 8601 с поясом: "2026-11-02T10:00:00Z"',
     )
     p.add_argument("--apply", action="store_true", help="выполнить откат (без флага — только план)")
+    p.add_argument(
+        "--force-old",
+        action="store_true",
+        dest="force_old",
+        help=f"разрешить as_of старше {RETENTION_DAYS} дней (версии могли быть уже удалены)",
+    )
     p.add_argument("--profile", default=None, help="профиль AWS CLI владельца")
     p.add_argument("--region", default="eu-central-1")
     return p
@@ -177,6 +224,23 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return 1
+    if as_of < datetime.now(UTC) - timedelta(days=RETENTION_DAYS) and not args.force_old:
+        print(
+            f"Ошибка: момент {as_of:%Y-%m-%d %H:%M:%S} UTC старше {RETENTION_DAYS} дней. "
+            f"Lifecycle бакета удаляет старые версии через {RETENTION_DAYS} дней, поэтому "
+            "состояние на этот момент восстановится не полностью. Если вы понимаете это, "
+            "добавьте --force-old.",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.prefix:
+        print("Внимание: префикс пуст — откатывается весь бакет.", file=sys.stderr)
+    elif not args.prefix.endswith("/"):
+        print(
+            f"Внимание: префикс «{args.prefix}» не заканчивается на «/» — будут затронуты и "
+            f"ключи вроде «{args.prefix}-old/…». Обычно нужен «{args.prefix}/».",
+            file=sys.stderr,
+        )
     try:
         s3 = make_client(args.profile, args.region)
         check_versioning(s3, args.bucket)
@@ -184,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         print(format_plan(actions) if actions else "Объектов под этим префиксом нет.")
         print(summary(actions))
         if args.apply:
-            apply_actions(s3, args.bucket, actions)
+            apply_actions(s3, args.bucket, actions, progress=lambda line: print(line, flush=True))
             print("Откат выполнен.")
         else:
             print("Это только план. Для выполнения добавьте --apply.")

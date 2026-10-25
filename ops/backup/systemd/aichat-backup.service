@@ -1,0 +1,24 @@
+# Ночной бэкап базы в S3 (ops/backup/backup.sh). Запускается таймером aichat-backup.timer;
+# вручную: sudo systemctl start aichat-backup.service; журнал: journalctl -u aichat-backup
+[Unit]
+Description=AI Chat: ночной бэкап базы (restic -> S3)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aichat/ops/backup/backup.sh
+User=root
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+# KillMode по умолчанию (control-group): SIGTERM получают все процессы юнита; 90 с хватает,
+# чтобы backup.sh удалил неполный снапшот, записал статус и отправил пинг /fail.
+TimeoutStopSec=90s
+# Вся файловая система только для чтения, кроме каталогов ниже. docker CLI при этом работает:
+# подключение к /run/docker.sock — не запись в файловую систему, тома (-v) монтирует dockerd,
+# в $HOME (/root, systemd задаёт его по User=) docker ничего не пишет. Проверено в Ubuntu 24.04.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aichat-backup /var/cache/aichat-restic
+PrivateTmp=true
+NoNewPrivileges=true

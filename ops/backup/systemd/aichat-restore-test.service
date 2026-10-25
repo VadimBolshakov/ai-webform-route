@@ -1,0 +1,26 @@
+# Ежемесячная проверка восстановления (ops/backup/restore-test.sh). Запускается таймером
+# aichat-restore-test.timer; вручную: sudo systemctl start aichat-restore-test.service
+[Unit]
+Description=AI Chat: проверка восстановления бэкапа во временную базу
+Wants=network-online.target
+# After=aichat-backup.service: если оба запуска стоят в очереди (догоняют пропуск после загрузки),
+# проверка ждёт окончания бэкапа.
+After=network-online.target docker.service aichat-backup.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aichat/ops/backup/restore-test.sh
+User=root
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+# KillMode по умолчанию (control-group); 90 с хватает, чтобы restore-test.sh удалил временную
+# базу, записал статус и отправил пинг /fail.
+TimeoutStopSec=90s
+# Вся файловая система только для чтения, кроме каталогов ниже. docker CLI при этом работает:
+# подключение к /run/docker.sock — не запись в файловую систему, тома (-v) монтирует dockerd,
+# в $HOME (/root, systemd задаёт его по User=) docker ничего не пишет. Проверено в Ubuntu 24.04.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aichat-backup /var/cache/aichat-restic
+PrivateTmp=true
+NoNewPrivileges=true

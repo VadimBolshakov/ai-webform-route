@@ -3,7 +3,7 @@
 import importlib.util
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import boto3
@@ -49,6 +49,11 @@ def _body(s3, key):
 
 def _kinds(actions):
     return {a[1]: a[0] for a in actions}
+
+
+def _recent() -> str:
+    """Время в пределах 30-дневного окна (ISO 8601, UTC)."""
+    return (datetime.now(UTC) - timedelta(days=1)).isoformat()
 
 
 def _live_keys(s3):
@@ -145,7 +150,7 @@ def test_undelete_refuses_without_versioning(monkeypatch, capsys):
         c.create_bucket(
             Bucket="plain", CreateBucketConfiguration={"LocationConstraint": "eu-central-1"}
         )
-        code = undelete.main(["--bucket", "plain", "--as-of", "2026-01-01T00:00:00Z"])
+        code = undelete.main(["--bucket", "plain", "--as-of", _recent()])
     assert code == 2
     assert "Версионирование бакета не включено — откат невозможно" in capsys.readouterr().err
 
@@ -163,7 +168,7 @@ def test_access_denied_exits_2(s3, monkeypatch, capsys):
             )
 
     monkeypatch.setattr(undelete, "make_client", lambda profile, region: Denying())
-    code = undelete.main(["--bucket", BUCKET, "--as-of", "2026-01-01T00:00:00Z"])
+    code = undelete.main(["--bucket", BUCKET, "--as-of", _recent()])
     assert code == 2
     assert "Нет прав на чтение версий" in capsys.readouterr().err
 
@@ -201,6 +206,97 @@ def test_apply_via_main(s3):
     )
     assert code == 0
     assert _body(s3, "aichat/a") == b"a1"
+
+
+def test_dry_run_after_apply_shows_nothing_to_do(s3, capsys):
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a1")
+    s3.put_object(Bucket=BUCKET, Key="aichat/b", Body=b"b1")
+    as_of = _tick()
+    s3.delete_object(Bucket=BUCKET, Key="aichat/a")
+    s3.put_object(Bucket=BUCKET, Key="aichat/b", Body=b"b2")
+    s3.put_object(Bucket=BUCKET, Key="aichat/c", Body=b"c1")
+    args = ["--bucket", BUCKET, "--as-of", as_of.isoformat()]
+    assert undelete.main([*args, "--apply"]) == 0
+    capsys.readouterr()
+
+    assert undelete.main(args) == 0
+    assert "восстановить 0, удалить 0, без изменений 3" in capsys.readouterr().out
+
+
+def test_restore_when_current_differs_only_in_content(s3):
+    """keep — только если у текущей версии тот же ETag и размер, что у целевой."""
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a1")
+    as_of = _tick()
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a2")  # тот же размер, другой ETag
+    assert _kinds(undelete.plan_restore(s3, BUCKET, "aichat/", as_of)) == {"aichat/a": "restore"}
+
+
+def test_apply_prints_progress(s3, capsys):
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a1")
+    as_of = _tick()
+    s3.delete_object(Bucket=BUCKET, Key="aichat/a")
+    s3.put_object(Bucket=BUCKET, Key="aichat/c", Body=b"c1")
+    assert undelete.main(["--bucket", BUCKET, "--as-of", as_of.isoformat(), "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "[1/2] восстановлено aichat/a" in out
+    assert "[2/2] удалено aichat/c" in out
+
+
+def test_apply_error_reports_done_keys(s3, monkeypatch, capsys):
+    for k in ("a", "b", "c"):
+        s3.put_object(Bucket=BUCKET, Key=f"aichat/{k}", Body=b"1")
+    as_of = _tick()
+    for k in ("a", "b", "c"):
+        s3.delete_object(Bucket=BUCKET, Key=f"aichat/{k}")
+    real_copy = s3.copy_object
+
+    def flaky_copy(**kw):
+        if kw["Key"] == "aichat/b":
+            raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "CopyObject")
+        return real_copy(**kw)
+
+    monkeypatch.setattr(s3, "copy_object", flaky_copy)
+    monkeypatch.setattr(undelete, "make_client", lambda profile, region: s3)
+    code = undelete.main(["--bucket", BUCKET, "--as-of", as_of.isoformat(), "--apply"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "[1/3] восстановлено aichat/a" in captured.out
+    assert "aichat/b" in captured.err and "boom" in captured.err
+    assert "Выполнено 1 из 3" in captured.err
+    assert "aichat/a" in captured.err
+    assert _live_keys(s3) == ["aichat/a"]
+
+
+def test_as_of_older_than_30_days_refused(s3, capsys):
+    old = (datetime.now(UTC) - timedelta(days=31)).isoformat()
+    code = undelete.main(["--bucket", BUCKET, "--as-of", old])
+    assert code == 2
+    assert "30 дней" in capsys.readouterr().err
+
+
+def test_as_of_older_than_30_days_with_force_old(s3, capsys):
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a1")
+    old = (datetime.now(UTC) - timedelta(days=31)).isoformat()
+    code = undelete.main(["--bucket", BUCKET, "--as-of", old, "--force-old"])
+    assert code == 0
+    assert "удалить 1" in capsys.readouterr().out
+
+
+def test_default_prefix_is_aichat(s3, capsys):
+    s3.put_object(Bucket=BUCKET, Key="other/a", Body=b"o1")
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a1")
+    code = undelete.main(["--bucket", BUCKET, "--as-of", _recent()])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "aichat/a" in captured.out and "other/a" not in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("prefix", ["aichat", ""])
+def test_prefix_without_slash_warns(s3, capsys, prefix):
+    code = undelete.main(["--bucket", BUCKET, "--prefix", prefix, "--as-of", _recent()])
+    assert code == 0
+    assert "Внимание: префикс" in capsys.readouterr().err
 
 
 def _as_list(v):

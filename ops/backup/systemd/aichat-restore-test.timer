@@ -1,0 +1,11 @@
+# 1-го числа каждого месяца в 04:30 по времени сервера.
+# Persistent=true: запуск, пропущенный из-за выключенного сервера, выполняется после загрузки.
+[Unit]
+Description=AI Chat: проверка восстановления 1-го числа в 04:30
+
+[Timer]
+OnCalendar=*-*-01 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

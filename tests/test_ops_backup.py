@@ -2,7 +2,9 @@
 healthchecks. Без Docker тест пропускается. Отдельные bash-тесты: AICHAT_BACKUP_TESTS="test_a test_b".
 """
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -26,7 +28,7 @@ def _docker_available() -> bool:
 
 def test_entry_point_scripts_are_executable():
     """systemd запускает скрипты напрямую (ExecStart): в git у них должен быть режим 100755."""
-    names = ["backup.sh", "restore-test.sh", "init-repo.sh", "install.sh"]
+    names = ["backup.sh", "restore-test.sh", "init-repo.sh", "install.sh", "restic.sh"]
     out = subprocess.run(
         ["git", "ls-files", "-s", "--", *[f"ops/backup/{n}" for n in names]],
         cwd=ROOT,
@@ -64,3 +66,11 @@ def test_backup_scripts():
         assert result.returncode == 0, "run.sh: есть упавшие тесты (FAIL в выводе выше)"
     finally:
         subprocess.run([*compose, "down", "-v", "--remove-orphans"], env=env, timeout=300)
+
+
+def test_runbook_lifecycle_matches_file():
+    """JSON lifecycle, вставленный в docs/backups.md, совпадает с ops/backup/aws/lifecycle.json."""
+    doc = (ROOT / "docs" / "backups.md").read_text(encoding="utf-8")
+    blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)```", doc, re.S)]
+    lifecycle = json.loads((BACKUP_DIR / "aws" / "lifecycle.json").read_text(encoding="utf-8"))
+    assert lifecycle in blocks
