@@ -24,6 +24,21 @@ def _docker_available() -> bool:
         return False
 
 
+def test_entry_point_scripts_are_executable():
+    """systemd запускает скрипты напрямую (ExecStart): в git у них должен быть режим 100755."""
+    names = ["backup.sh", "restore-test.sh", "init-repo.sh", "install.sh"]
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "--", *[f"ops/backup/{n}" for n in names]],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    modes = {line.split("\t")[1].rsplit("/", 1)[1]: line.split()[0] for line in out.splitlines()}
+    assert {"backup.sh", "restore-test.sh", "init-repo.sh"} <= modes.keys()
+    assert {n: m for n, m in modes.items() if m != "100755"} == {}
+
+
 @pytest.mark.docker
 def test_backup_scripts():
     if not _docker_available():

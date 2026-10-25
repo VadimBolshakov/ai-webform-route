@@ -190,8 +190,10 @@ load_env_or_report() {
 
 # report_error <текст без секретов> — статус с ошибкой и пинг /fail.
 report_error() {
-    # shellcheck disable=SC2034  # REPORTED читает trap EXIT вызывающего скрипта
+    # shellcheck disable=SC2034  # REPORTED и LAST_ERROR читает trap EXIT вызывающего скрипта
     REPORTED=1
+    # shellcheck disable=SC2034
+    LAST_ERROR=$1
     write_status "$STATUS_FILE" "$(status_error "$1")" || log "Не удалось записать $STATUS_FILE"
     hc_ping "${!PING_URL_VAR:-}" fail "$1"
 }

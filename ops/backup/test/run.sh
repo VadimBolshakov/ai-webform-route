@@ -749,6 +749,57 @@ EOS
     ! db_exists restore_test || fail "restore_test осталась"
 }
 
+test_restore_drops_db_with_open_connection() {
+    init_test_repo
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    curl -fsS -X POST "$HC_URL/reset" >/dev/null
+    # «pg_restore» создаёт таблицы и оставляет открытое соединение с restore_test (как после SIGTERM клиента).
+    export PG_RESTORE_CMD="sh -c 'cat >/dev/null; psql -h db -U aichat -d restore_test -qc \"CREATE TABLE users (id int); INSERT INTO users VALUES (1); CREATE TABLE alembic_version (v text); INSERT INTO alembic_version VALUES (1)\"; psql -h db -U aichat -d restore_test -c \"select pg_sleep(60)\" >/dev/null 2>&1 &'"
+    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh вернул ошибку"; }
+    ! db_exists restore_test || fail "restore_test осталась из-за открытого соединения"
+    jq -e '.result == "ok" and .users == 1' "$RESTORE_STATUS" >/dev/null || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
+}
+
+test_restore_drop_failure_is_error() {
+    init_test_repo
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    curl -fsS -X POST "$HC_URL/reset" >/dev/null
+    # psql-обёртка: после восстановления отказывается удалять restore_test.
+    cat >/tmp/nodrop-psql <<'EOS'
+#!/bin/sh
+case "$*" in *"DROP DATABASE"*) [ -e /tmp/restore-done ] && { echo "ERROR: cannot drop restore_test" >&2; exit 1; } ;; esac
+exec psql -h db -U aichat -v ON_ERROR_STOP=1 "$@"
+EOS
+    chmod +x /tmp/nodrop-psql
+    rm -f /tmp/restore-done
+    export PSQL_CMD=/tmp/nodrop-psql
+    export PG_RESTORE_CMD="sh -c 'cat >/dev/null; psql -h db -U aichat -d restore_test -qc \"CREATE TABLE users (id int); INSERT INTO users VALUES (1); CREATE TABLE alembic_version (v text); INSERT INTO alembic_version VALUES (1)\"; touch /tmp/restore-done'"
+    local rc
+    rc=$(rc_of run_script restore-test.sh)
+    # Убираем остаток, чтобы не мешать следующим тестам (до проверок: при падении теста БД не остаётся).
+    local left
+    left=$(db_exists restore_test && echo yes || echo no)
+    psql -h db -U aichat -d aichat -qc 'DROP DATABASE IF EXISTS restore_test WITH (FORCE)'
+    [[ "$left" == yes ]] || fail "restore_test должна была остаться (имитация сбоя удаления)"
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
+    jq -e '.result == "error" and .users == 1 and (.error | test("не удалось удалить временную БД restore_test"))' "$RESTORE_STATUS" >/dev/null \
+        || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start / /fail" ]] || { cat "$HC_LOG"; fail "пинги не /start, /, /fail"; }
+    jq -r 'select(.path == "/fail") | .body' "$HC_LOG" | grep -q "restore_test" || fail "тело /fail"
+}
+
+test_restore_fails_on_future_snapshot() {
+    init_test_repo
+    export AICHAT_NOW=$RT_BASE
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    local rc
+    rc=$(AICHAT_NOW=$((RT_BASE - 2 * 3600)) rc_of run_script restore-test.sh)
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
+    grep -q "в будущем" "$OUT" || { cat "$OUT"; fail "нет сообщения"; }
+    ! db_exists restore_test || fail "restore_test создана"
+    AICHAT_NOW=$((RT_BASE - 1800)) run_script restore-test.sh || { cat "$OUT"; fail "сдвиг 30 мин должен проходить"; }
+}
+
 test_iso_to_epoch() {
     run_lib 'iso_to_epoch 2026-01-01T03:30:00Z; iso_to_epoch 2026-01-01T03:30:00.123456789Z;
         iso_to_epoch 2026-01-01T05:30:00.5+02:00; iso_to_epoch 2026-01-01T03:30:00-00:00; iso_to_epoch 2025-12-31T22:30:00.25-05:00' \

@@ -16,6 +16,9 @@ DB_TOUCHED=0 # временная БД создавалась (или могла
 snapshot=""  # короткий id снапшота
 age_h=""     # возраст снапшота в часах
 users=""     # число строк users в восстановленной БД
+DROP_ERR=""  # текст ошибки удаления restore_test (без секретов)
+LAST_ERROR="" # последняя отправленная ошибка (report_error)
+DROP_SQL='DROP DATABASE IF EXISTS restore_test WITH (FORCE)' # FORCE: разрывает чужие соединения
 
 # status_json <result> <error> — пустые значения → null.
 status_json() {
@@ -37,10 +40,18 @@ WORK=$(mktemp -d)
 
 INTERRUPTED="Проверка восстановления прервана сигналом (таймаут/остановка)"
 
-# Удаляет временную БД; ошибка удаления только в журнал (код выхода и статус остаются прежними).
+# Удаляет временную БД и проверяет, что её нет; при неудаче текст ошибки — в DROP_ERR.
 drop_db() {
-    db_psql -c 'DROP DATABASE IF EXISTS restore_test' >"$WORK/drop.out" 2>"$WORK/drop.err" </dev/null \
-        || log "Не удалось удалить БД restore_test: $(error_text last "$(<"$WORK/drop.err")")"
+    local rc=0 left
+    db_psql -c "$DROP_SQL" >"$WORK/drop.out" 2>"$WORK/drop.err" </dev/null || rc=$?
+    emit "$WORK/drop.err" >&2
+    if ((rc == 0)); then
+        left=$(db_psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'restore_test'" 2>"$WORK/drop.err" </dev/null) || rc=$?
+        [[ -z "$left" ]] || rc=1
+    fi
+    if ((rc != 0)); then
+        DROP_ERR="не удалось удалить временную БД restore_test, на сервере осталась копия данных: $(error_text last "$(<"$WORK/drop.err")")"
+    fi
 }
 
 on_exit() {
@@ -48,6 +59,12 @@ on_exit() {
     ignore_signals
     if ((DB_TOUCHED)); then drop_db || true; fi
     rm -rf "$WORK"
+    if [[ -n "$DROP_ERR" ]]; then
+        # Даже если проверка прошла: остаток данных — ошибка, статус и пинг /fail перезаписываются.
+        log "Ошибка: $DROP_ERR"
+        report_error "${LAST_ERROR:+$LAST_ERROR; }$DROP_ERR"
+        exit 1
+    fi
     if ((rc != 0 && !REPORTED)); then
         report_error "Непредвиденная ошибка restore-test.sh (код $rc), подробности в журнале"
     fi
@@ -67,7 +84,7 @@ count_rows() {
 hc_ping "${HC_RESTORE_URL:-}" start
 
 STEP_SHOW_OUT=0 step "restic snapshots" restic_cmd snapshots --tag aichat-db --latest 1 --json
-latest=$(jq -c 'max_by(.time) // empty' "$WORK/out" 2>/dev/null) || fail "restic snapshots: ответ не разобран"
+latest=$(jq -c '.[0] // empty' "$WORK/out" 2>/dev/null) || fail "restic snapshots: ответ не разобран"
 [[ -n "$latest" ]] || fail "В репозитории нет снапшотов aichat-db: бэкапы не создаются"
 snapshot_id=$(jq -r .id <<<"$latest")
 snapshot=${snapshot_id:0:8}
@@ -76,10 +93,11 @@ snap_epoch=$(iso_to_epoch "$(jq -r .time <<<"$latest")") || fail "Не удал�
 age_s=$(($(now_epoch) - snap_epoch))
 age_h=$(jq -n --argjson s "$age_s" '($s / 360 | round) / 10')
 log "Последний снапшот: $snapshot, возраст $age_h ч"
+((age_s >= -3600)) || fail "Время последнего снапшота в будущем более чем на час: проверьте часы сервера (или репозиторий подменён)"
 ((age_s <= MAX_AGE_S)) || fail "Последний снапшот старше 48 часов: бэкапы не создаются"
 
 DB_TOUCHED=1
-step "psql" db_psql -c 'DROP DATABASE IF EXISTS restore_test' -c 'CREATE DATABASE restore_test'
+step "psql" db_psql -c "$DROP_SQL" -c 'CREATE DATABASE restore_test'
 
 # Восстановление идёт только через канал, на диск дамп не пишется.
 set +e
