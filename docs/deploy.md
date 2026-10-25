@@ -259,9 +259,13 @@ scp "vadim@aramistrio.online:/home/vadim/backups/aichat-*.dump" C:\Users\Vadim\D
 Полное восстановление рабочей базы из дампа (стирает текущие данные):
 
 ```bash
-docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists < aichat-ГГГГ-ММ-ДД.dump
-docker compose restart app
+cd /opt/aichat
+docker compose stop app
+docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction < ~/backups/aichat-ГГГГ-ММ-ДД.dump
+docker compose start app
 ```
+
+`--single-transaction`: при ошибке восстановления база остаётся как была (тогда приложение не запускайте).
 
 ## 9. Эксплуатация
 

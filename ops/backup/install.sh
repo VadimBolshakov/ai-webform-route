@@ -32,6 +32,11 @@ if [[ ! -e "$AICHAT_BACKUP_ENV" ]]; then
 fi
 chown root:root "$AICHAT_BACKUP_ENV"
 chmod 600 "$AICHAT_BACKUP_ENV"
+# Пароль, вставленный вручную (docs/backups.md, 6.2), мог получить права по умолчанию.
+if [[ -e "$RESTIC_PASSWORD_FILE" ]]; then
+    chown root:root "$RESTIC_PASSWORD_FILE"
+    chmod 600 "$RESTIC_PASSWORD_FILE"
+fi
 
 set -a
 # shellcheck source=/dev/null

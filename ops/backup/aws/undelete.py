@@ -25,6 +25,9 @@ PAGE_SIZE = 1000
 # Некактуальные версии lifecycle удаляет через столько дней (aws/lifecycle.json).
 RETENTION_DAYS = 30
 
+# Сколько обработанных ключей перечислять в сообщении об ошибке --apply.
+DONE_KEYS_SHOWN = 20
+
 # Action = (kind: "restore" | "delete" | "keep", key, version_id | None)
 Action = tuple[str, str, str | None]
 
@@ -148,7 +151,9 @@ class ApplyError(Exception):
             f"Выполнено {len(self.done)} из {self.total} действий до ошибки.",
         ]
         if self.done:
-            lines.append("Уже обработаны: " + ", ".join(self.done))
+            shown = ", ".join(self.done[:DONE_KEYS_SHOWN])
+            rest = len(self.done) - DONE_KEYS_SHOWN
+            lines.append("Уже обработаны: " + shown + (f" и ещё {rest}" if rest > 0 else ""))
         lines.append("Запустите ту же команду снова: обработанные ключи будут «без изменений».")
         return "\n".join(lines)
 
@@ -226,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if as_of < datetime.now(UTC) - timedelta(days=RETENTION_DAYS) and not args.force_old:
         print(
-            f"Ошибка: момент {as_of:%Y-%m-%d %H:%M:%S} UTC старше {RETENTION_DAYS} дней. "
+            f"Ошибка: момент {as_of.astimezone(UTC):%Y-%m-%d %H:%M:%S} UTC старше {RETENTION_DAYS} дней. "
             f"Lifecycle бакета удаляет старые версии через {RETENTION_DAYS} дней, поэтому "
             "состояние на этот момент восстановится не полностью. Если вы понимаете это, "
             "добавьте --force-old.",

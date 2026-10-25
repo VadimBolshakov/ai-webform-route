@@ -372,22 +372,44 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
 Не запускайте перед этим ручной бэкап: свежий снапшот с испорченными данными вытеснил бы сегодняшний
 хороший при ротации.
 
-```bash
-cd /opt/aichat
-docker compose exec -T db pg_dump -U aichat -Fc aichat > ~/before-restore-$(date +%F-%H%M).dump
-docker compose stop app
-sudo -v
-sudo ops/backup/restic.sh dump <snapshot-id> /aichat.dump | docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists
-docker compose start app
-docker compose ps
-```
+1. Сохраните текущую (испорченную) базу на всякий случай, остановите ночной бэкап и приложение,
+   восстановите снапшот:
 
-- Первая команда сохраняет текущую (испорченную) базу на всякий случай в `~/before-restore-….dump`.
-  В нём вся переписка: когда всё в порядке, удалите его: `rm ~/before-restore-*.dump`.
-- `sudo -v` заранее спрашивает пароль sudo, чтобы запрос не смешался с выводом восстановления.
-- Если `pg_restore` напечатал ошибки — не открывайте приложение пользователям, разберитесь с ошибкой;
-  текущая база до восстановления — в `~/before-restore-….dump` (вернуть её: раздел 8 `docs/deploy.md`,
-  «Полное восстановление рабочей базы из дампа»).
+   ```bash
+   cd /opt/aichat
+   docker compose exec -T db pg_dump -U aichat -Fc aichat > ~/before-restore-$(date +%F-%H%M).dump
+   ls -lh ~/before-restore-*.dump
+   sudo systemctl stop aichat-backup.timer
+   docker compose stop app
+   sudo -v
+   sudo ops/backup/restic.sh dump <snapshot-id> /aichat.dump | docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction
+   ```
+
+   - `ls` показывает имя сохранённого файла, например `before-restore-2026-11-02-1530.dump` — запомните его.
+     В нём вся переписка: когда всё в порядке, удалите его: `rm ~/before-restore-*.dump`.
+   - `sudo -v` заранее спрашивает пароль sudo, чтобы запрос не смешался с выводом восстановления.
+   - `--single-transaction`: восстановление выполняется целиком или не выполняется вовсе — при ошибке
+     база остаётся как была.
+
+2. **Только если `pg_restore` не напечатал ошибок** — запустите приложение и ночной бэкап:
+
+   ```bash
+   docker compose start app
+   docker compose ps
+   sudo systemctl start aichat-backup.timer
+   ```
+
+3. Если `pg_restore` напечатал ошибки, приложение не запускайте: попробуйте другой снапшот (команды
+   `sudo -v` и `sudo ops/backup/restic.sh dump …` из шага 1) или верните базу, какой она была до
+   восстановления (подставьте имя файла из `ls`):
+
+   ```bash
+   cd /opt/aichat
+   docker compose stop app
+   docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction < ~/before-restore-<дата-время>.dump
+   docker compose start app
+   sudo systemctl start aichat-backup.timer
+   ```
 
 ### 6.2 На новом сервере
 
@@ -403,7 +425,7 @@ docker compose ps
    sudo nano /etc/aichat/restic.env
    ```
 
-   В `restic.env` вставьте сохранённое содержимое (после атаки — с **новым** ключом сервера, раздел 7, шаг 5).
+   В `restic.env` вставьте сохранённое содержимое (после атаки — с **новым** ключом сервера, раздел 7, шаг 6).
    Затем пароль репозитория из менеджера паролей (одна строка):
 
    ```bash
@@ -411,8 +433,11 @@ docker compose ps
    sudo chmod 600 /etc/aichat/restic-password
    sudo ops/backup/restic.sh snapshots --tag aichat-db
    sudo -v
-   sudo ops/backup/restic.sh dump latest /aichat.dump | docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists
+   sudo ops/backup/restic.sh dump latest /aichat.dump | docker compose exec -T db pg_restore -U aichat -d aichat --clean --if-exists --single-transaction
    ```
+
+   Если `pg_restore` напечатал ошибки — дальше не идите: база осталась пустой, повторите команду
+   (или укажите другой снапшот вместо `latest`).
 
 3. Запустите приложение и включите бэкапы (второй проход установки найдёт существующий репозиторий
    и пароль):
@@ -449,13 +474,14 @@ docker compose ps
    `aichat-backup` на healthchecks.io (последний нормальный бэкап) и в консоли S3 у бакета переключатель
    **Show versions** (время удалений — у строк **Delete marker**).
 
-3. **План отката** (ничего не меняет). В первой строке замените `<bucket>`, в последней — время:
+3. **План отката** (ничего не меняет). В первой строке замените `<bucket>`, во второй — время из шага 2:
 
    ```powershell
    $bucket = "<bucket>"
+   $asOf = "<время до атаки, например 2026-11-02T10:00:00Z>"
    $env:AWS_PROFILE = "aichat-admin"
-   .venv\Scripts\python -m pip install boto3
-   .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of 2026-11-02T10:00:00Z
+   .venv\Scripts\python -m pip install boto3==1.43.118
+   .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of $asOf
    ```
 
    Печатается таблица `восстановить` / `удалить` / `без изменений` по ключам папки `aichat/` и итог.
@@ -465,8 +491,8 @@ docker compose ps
 4. **Откат** — та же команда с `--apply`, затем снова без него:
 
    ```powershell
-   .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of 2026-11-02T10:00:00Z --apply
-   .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of 2026-11-02T10:00:00Z
+   .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of $asOf --apply
+   .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of $asOf
    ```
 
    Во время `--apply` печатается каждый обработанный ключ. Повторный план должен показать

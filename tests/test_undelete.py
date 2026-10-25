@@ -3,7 +3,7 @@
 import importlib.util
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import boto3
@@ -351,3 +351,18 @@ def test_policy_files_valid():
     assert [r["Expiration"] for r in rules if "Expiration" in r] == [
         {"ExpiredObjectDeleteMarker": True}
     ]
+
+
+def test_old_as_of_with_offset_shown_in_utc(s3, capsys):
+    old = (datetime.now(UTC) - timedelta(days=31)).replace(hour=10, minute=0, second=0, microsecond=0)
+    local = old.astimezone(timezone(timedelta(hours=3)))  # 13:00 +03:00
+    assert undelete.main(["--bucket", BUCKET, "--as-of", local.isoformat()]) == 2
+    assert f"{old:%Y-%m-%d} 10:00:00 UTC" in capsys.readouterr().err
+
+
+def test_apply_error_caps_done_keys_list():
+    err = undelete.ApplyError("k", [f"aichat/k{i}" for i in range(25)], 30, RuntimeError("boom"))
+    text = str(err)
+    assert "aichat/k19" in text and "aichat/k20" not in text
+    assert "и ещё 5" in text
+    assert "Выполнено 25 из 30" in text
