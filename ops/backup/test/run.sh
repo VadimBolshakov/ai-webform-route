@@ -85,6 +85,28 @@ init_test_repo() {
     restic_t init >/dev/null 2>&1 || fail "restic init"
 }
 
+# /tmp/leaky-restic — restic, печатающий секреты в stderr при каждом вызове и падающий на forget.
+make_leaky_restic() {
+    cat >/tmp/leaky-restic <<'EOF'
+#!/bin/sh
+echo "leak: $AWS_SECRET_ACCESS_KEY $AWS_ACCESS_KEY_ID $HC_BACKUP_URL $(cat "$RESTIC_PASSWORD_FILE")" >&2
+if [ "$1" = forget ]; then
+    echo "Fatal: forget $AWS_SECRET_ACCESS_KEY $(cat "$RESTIC_PASSWORD_FILE")" >&2
+    exit 1
+fi
+exec restic "$@"
+EOF
+    chmod +x /tmp/leaky-restic
+}
+
+# assert_no_key_id <file> — в файле нет ID ключа AWS.
+assert_no_key_id() {
+    local key_id
+    # shellcheck source=/dev/null
+    key_id=$(set -a; . "$AICHAT_BACKUP_ENV"; printf '%s' "$AWS_ACCESS_KEY_ID")
+    ! grep -qF "$key_id" "$1" || fail "в выводе ID ключа AWS"
+}
+
 snapshots_json() { restic_t snapshots --tag aichat-db --json; }
 snapshot_count() { snapshots_json | jq length; }
 STATUS=$AICHAT_STATE_DIR/status.json
@@ -375,15 +397,70 @@ EOF
         || { cat "$STATUS"; fail "текст ошибки restic backup"; }
     [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "есть снапшот"; }
     [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+
+    # Дамп больше буфера канала: restic вышел, не читая, — pg_dump получает SIGPIPE (141);
+    # это следствие, а не причина, и в текст ошибки не попадает.
+    export PG_DUMP_CMD="sh -c 'yes | head -c 10000000'"
+    rc=$(RESTIC_CMD=/tmp/badpw-restic rc_of run_script backup.sh)
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой restic backup (SIGPIPE): код $rc"; }
+    [[ "$(jq -r .error "$STATUS")" == "restic backup: Fatal: wrong password or no key found" ]] \
+        || { cat "$STATUS"; fail "текст ошибки при SIGPIPE у pg_dump"; }
 }
 
 test_backup_env_error() {
-    # Нет пароля репозитория: load_env падает до пингов (URL пинга ещё не известен).
+    # Нет пароля репозитория: load_env падает до пингов (URL пинга ещё не известен),
+    # но status.json получает ошибку — старый «ok» не остаётся.
+    install -d -m 700 "$AICHAT_STATE_DIR"
+    echo '{"result":"ok"}' >"$STATUS"
     local rc
     rc=$(rc_of run_script backup.sh)
     [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
     grep -q "Нет файла пароля репозитория" "$OUT" || { cat "$OUT"; fail "нет сообщения"; }
+    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Нет файла пароля репозитория"))' \
+        "$STATUS" >/dev/null || { cat "$STATUS"; fail "status.json"; }
     [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "были пинги"; }
+}
+
+test_cleanup_forget_failure_redacted() {
+    init_test_repo
+    make_leaky_restic
+    export PG_DUMP_CMD="sh -c 'echo partial; exit 3'"
+    local rc
+    rc=$(RESTIC_CMD=/tmp/leaky-restic rc_of run_script backup.sh)
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
+    jq -e '.error | test("^pg_dump: код выхода 3; не удалось удалить снапшот [0-9a-f]{8} из неполного дампа: Fatal: forget \\*\\*\\* \\*\\*\\*$")' \
+        "$STATUS" >/dev/null || { cat "$STATUS"; fail "текст ошибки удаления снапшота"; }
+    # stderr неудачного forget — в журнале, с вырезанными секретами.
+    grep -qx 'Fatal: forget \*\*\* \*\*\*' "$OUT" || { cat "$OUT"; fail "stderr forget не в журнале"; }
+    local all=/tmp/all-output
+    cat "$OUT" "$STATUS" >"$all"
+    jq -r .body "$HC_LOG" >>"$all"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+    assert_no_secrets "$all"
+    assert_no_key_id "$all"
+}
+
+test_sigterm_mid_dump_no_snapshot() {
+    init_test_repo
+    # Дамп «зависает» на 3 с; SIGTERM приходит backup.sh во время дампа. Дамп затем завершается,
+    # restic сохраняет снапшот — backup.sh обязан его удалить и сообщить о прерывании.
+    export PG_DUMP_CMD="sh -c 'touch /tmp/dump-started; echo partial; sleep 3; echo rest'"
+    rm -f /tmp/dump-started
+    bash "$BACKUP_DIR/backup.sh" >"$OUT" 2>&1 &
+    local pid=$! i rc=0
+    for i in $(seq 1 150); do
+        [[ ! -e /tmp/dump-started ]] || break
+        sleep 0.2
+    done
+    [[ -e /tmp/dump-started ]] || { kill "$pid"; cat "$OUT"; fail "дамп не начался"; }
+    kill -TERM "$pid"
+    wait "$pid" || rc=$?
+    ((rc != 0)) || { cat "$OUT"; fail "прерванный бэкап вернул 0"; }
+    [[ "$(snapshot_count)" == 0 ]] || { cat "$OUT"; snapshots_json; fail "остался снапшот прерванного дампа"; }
+    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Бэкап прерван сигналом (таймаут/остановка)"))' \
+        "$STATUS" >/dev/null || { cat "$OUT" "$STATUS"; fail "status.json"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+    [[ -n "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" ]] || fail "пустое тело /fail"
 }
 
 test_unexpected_error_reported() {
@@ -448,17 +525,7 @@ test_no_secrets_in_output() {
     grep -q "Нет доступа к репозиторию: " "$OUT" || { cat "$OUT"; fail "нет текста об ошибке доступа"; }
     collect
 
-    # restic, печатающий секреты в stderr при каждом вызове и падающий на forget.
-    cat >/tmp/leaky-restic <<'EOF'
-#!/bin/sh
-echo "leak: $AWS_SECRET_ACCESS_KEY $AWS_ACCESS_KEY_ID $HC_BACKUP_URL $(cat "$RESTIC_PASSWORD_FILE")" >&2
-if [ "$1" = forget ]; then
-    echo "Fatal: forget $AWS_SECRET_ACCESS_KEY $(cat "$RESTIC_PASSWORD_FILE")" >&2
-    exit 1
-fi
-exec restic "$@"
-EOF
-    chmod +x /tmp/leaky-restic
+    make_leaky_restic
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     rc=$(RESTIC_CMD=/tmp/leaky-restic rc_of run_script backup.sh)
     [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой forget: код $rc"; }
@@ -468,10 +535,7 @@ EOF
 
     [[ "$(jq -r .path "$HC_LOG" | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
     assert_no_secrets "$all"
-    local key_id
-    # shellcheck source=/dev/null
-    key_id=$(set -a; . "$AICHAT_BACKUP_ENV"; printf '%s' "$AWS_ACCESS_KEY_ID")
-    ! grep -qF "$key_id" "$all" || fail "в выводе ID ключа AWS"
+    assert_no_key_id "$all"
 }
 
 test_dump_never_touches_disk() {
