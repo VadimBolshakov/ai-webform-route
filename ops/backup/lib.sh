@@ -124,3 +124,32 @@ write_status() {
 }
 
 now_epoch() { printf '%s\n' "${AICHAT_NOW:-$(date +%s)}"; }
+
+# redact <text> — печатает text (без перевода строки в конце), заменив на «***» значения секретов:
+# пароль репозитория, ключи AWS, URL пингов healthchecks.io.
+redact() {
+    local text=$1 secret pw="" hb=${HC_BACKUP_URL:-} hr=${HC_RESTORE_URL:-}
+    if [[ -r "$RESTIC_PASSWORD_FILE" ]]; then pw=$(<"$RESTIC_PASSWORD_FILE"); fi
+    for secret in "$pw" "${AWS_SECRET_ACCESS_KEY:-}" "$hb" "${hb%/}" "$hr" "${hr%/}" "${AWS_ACCESS_KEY_ID:-}"; do
+        if [[ -n "$secret" ]]; then text=${text//"$secret"/"***"}; fi
+    done
+    printf '%s' "$text"
+}
+
+# error_text <first|last> <text> — первая или последняя непустая строка text (для JSON-ошибки
+# restic --json — её поле message) без секретов, обрезанная до 1024 байт; пусто, если строк нет.
+error_text() {
+    local which=$1 text=$2 line msg
+    if [[ "$which" == first ]]; then
+        line=$(awk 'NF {print; exit}' <<<"$text")
+    else
+        line=$(awk 'NF {l = $0} END {printf "%s", l}' <<<"$text")
+    fi
+    if [[ "$line" == "{"* ]] \
+        && msg=$(jq -er '(.message // .error.message) | strings' <<<"$line" 2>/dev/null); then
+        line=${msg//$'\n'/ }
+    fi
+    line=$(redact "$line")
+    local LC_ALL=C
+    printf '%s' "${line:0:1024}"
+}
