@@ -169,6 +169,38 @@ test_init_bad_env_leaves_no_password() {
     ! grep -q "Сохраните пароль" "$OUT" || fail "просьба сохранить несуществующий пароль"
 }
 
+# Переустановка: репозиторий в бакете есть, а файла пароля нет — новый (неверный) пароль не остаётся.
+test_init_existing_repo_without_password() {
+    init_test_repo
+    rm -f "$RESTIC_PASSWORD_FILE"
+    local rc
+    rc=$(rc_of run_script init-repo.sh)
+    [[ "$rc" != 0 ]] || { cat "$OUT"; fail "init без пароля при существующем репозитории не упал"; }
+    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "остался новый файл пароля"
+    ! grep -q "Сохраните" "$OUT" || { cat "$OUT"; fail "просьба сохранить неверный пароль"; }
+    grep -q "Похоже, репозиторий уже существует (или нет доступа). Если это переустановка — положите прежний пароль из менеджера паролей в /etc/aichat/restic-password (docs/backups.md, раздел 6.2) и запустите снова." "$OUT" \
+        || { cat "$OUT"; fail "нет подсказки про прежний пароль"; }
+    # С прежним паролем — «уже существует».
+    use_test_password
+    run_script init-repo.sh || { cat "$OUT"; fail "init с прежним паролем упал"; }
+    grep -q "Репозиторий уже существует" "$OUT" || { cat "$OUT"; fail "нет сообщения «уже существует»"; }
+}
+
+# Новый пароль, но restic init упал — пароль удаляется, просьбы его сохранить нет.
+test_init_failure_removes_new_password() {
+    cat >/tmp/noinit-restic <<'EOF'
+#!/bin/sh
+if [ "$1" = init ]; then echo "Fatal: create repository failed" >&2; exit 1; fi
+exec restic "$@"
+EOF
+    chmod +x /tmp/noinit-restic
+    local rc
+    rc=$(RESTIC_CMD=/tmp/noinit-restic rc_of run_script init-repo.sh)
+    [[ "$rc" != 0 ]] || { cat "$OUT"; fail "упавший restic init не дал ошибку"; }
+    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "остался новый файл пароля"
+    ! grep -q "Сохраните" "$OUT" || { cat "$OUT"; fail "просьба сохранить пароль без репозитория"; }
+}
+
 test_init_ignores_stale_tmp() {
     printf 'stale\n' >"$RESTIC_PASSWORD_FILE.tmp"
     run_script init-repo.sh || { cat "$OUT"; fail "init-repo.sh со старым .tmp упал"; }
@@ -586,6 +618,25 @@ test_stale_lock_removed() {
     run_script backup.sh || { cat "$OUT"; fail "backup.sh со старым lock упал"; }
     [[ -z "$(restic_t list locks --no-lock)" ]] || fail "lock не снят"
     [[ "$(snapshot_count)" == 1 ]] || { snapshots_json; fail "снапшотов не 1"; }
+}
+
+# Команды, которые могут столкнуться с lock ещё идущего prune, ждут его (--retry-lock 30m).
+test_retry_lock_used() {
+    init_test_repo
+    cat >/tmp/argrec-restic <<'EOF'
+#!/bin/sh
+echo "$*" >>/tmp/restic-args
+exec restic "$@"
+EOF
+    chmod +x /tmp/argrec-restic
+    rm -f /tmp/restic-args
+    RESTIC_CMD=/tmp/argrec-restic run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    RESTIC_CMD=/tmp/argrec-restic run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh вернул ошибку"; }
+    local cmd
+    for cmd in backup forget snapshots dump; do
+        grep -q "^$cmd --retry-lock 30m " /tmp/restic-args \
+            || { cat /tmp/restic-args; fail "restic $cmd без --retry-lock 30m"; }
+    done
 }
 
 # --- тесты: restore-test.sh ---------------------------------------------------

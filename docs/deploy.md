@@ -230,12 +230,14 @@ chmod 700 ~/aichat-backup.sh
 ~/aichat-backup.sh && ls -lh ~/backups
 ```
 
-Каждую ночь в 03:30:
+Каждую ночь в 02:30 (на час раньше основного бэкапа в S3, чтобы они не шли одновременно):
 
 ```bash
-(crontab -l 2>/dev/null; echo '30 3 * * * $HOME/aichat-backup.sh >> $HOME/backups/backup.log 2>&1') | crontab -
+(crontab -l 2>/dev/null; echo '30 2 * * * $HOME/aichat-backup.sh >> $HOME/backups/backup.log 2>&1') | crontab -
 crontab -l
 ```
+
+Если раньше вы добавили эту строку с `30 3` — исправьте её на `30 2` в `crontab -e`.
 
 Проверка восстановления во временную базу (рабочая не затрагивается) — сделайте хотя бы раз:
 

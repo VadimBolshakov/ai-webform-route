@@ -91,7 +91,8 @@ esac
 step "restic unlock" restic_cmd unlock
 
 # Дамп идёт только через канал в stdin restic, на диск не пишется.
-backup_args=(backup --stdin --stdin-filename aichat.dump --tag aichat-db --host aichat --json)
+# --retry-lock: ждать (до 30 минут) снятия lock, если ещё идёт prune другого запуска, а не падать.
+backup_args=(backup --retry-lock 30m --stdin --stdin-filename aichat.dump --tag aichat-db --host aichat --json)
 if [[ -n "${AICHAT_NOW:-}" ]]; then
     # Только для тестов ротации: время снапшота = AICHAT_NOW (UTC).
     backup_args+=(--time "$(date -u -d "@$AICHAT_NOW" '+%Y-%m-%d %H:%M:%S')")
@@ -127,7 +128,7 @@ fi
 ACCEPTED=1
 log "Снапшот ${snapshot_id:0:8} создан, ${size_bytes:-?} байт"
 
-step "restic forget" restic_cmd forget --tag aichat-db --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
+step "restic forget" restic_cmd forget --retry-lock 30m --tag aichat-db --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
 
 if [[ "$(date -u -d "@$(now_epoch)" +%u)" == 7 ]]; then
     step "restic check" restic_cmd check

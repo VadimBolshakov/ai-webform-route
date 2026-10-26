@@ -9,8 +9,6 @@ After=network-online.target docker.service
 Type=oneshot
 ExecStart=/opt/aichat/ops/backup/backup.sh
 User=root
-Nice=10
-IOSchedulingClass=idle
 TimeoutStartSec=2h
 # KillMode по умолчанию (control-group): SIGTERM получают все процессы юнита; 90 с хватает,
 # чтобы backup.sh удалил неполный снапшот, записал статус и отправил пинг /fail.
@@ -19,6 +17,11 @@ TimeoutStopSec=90s
 # подключение к /run/docker.sock — не запись в файловую систему, тома (-v) монтирует dockerd,
 # в $HOME (/root, systemd задаёт его по User=) docker ничего не пишет. Проверено в Ubuntu 24.04.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/aichat-backup /var/cache/aichat-restic
+# /var/lib/aichat-backup (статус) и /var/cache/aichat-restic (кэш restic): systemd создаёт их перед
+# запуском, если их нет (например, кэш удалили), и открывает на запись.
+StateDirectory=aichat-backup
+StateDirectoryMode=0700
+CacheDirectory=aichat-restic
+CacheDirectoryMode=0700
 PrivateTmp=true
 NoNewPrivileges=true

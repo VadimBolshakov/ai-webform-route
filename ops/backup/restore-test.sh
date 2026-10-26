@@ -83,7 +83,8 @@ count_rows() {
 
 hc_ping "${HC_RESTORE_URL:-}" start
 
-STEP_SHOW_OUT=0 step "restic snapshots" restic_cmd snapshots --tag aichat-db --latest 1 --json
+# --retry-lock: идущий в это время prune бэкапа держит lock — ждём его (до 30 минут), а не сообщаем о сбое.
+STEP_SHOW_OUT=0 step "restic snapshots" restic_cmd snapshots --retry-lock 30m --tag aichat-db --latest 1 --json
 latest=$(jq -c '.[0] // empty' "$WORK/out" 2>/dev/null) || fail "restic snapshots: ответ не разобран"
 [[ -n "$latest" ]] || fail "В репозитории нет снапшотов aichat-db: бэкапы не создаются"
 snapshot_id=$(jq -r .id <<<"$latest")
@@ -101,7 +102,7 @@ step "psql" db_psql -c "$DROP_SQL" -c 'CREATE DATABASE restore_test'
 
 # Восстановление идёт только через канал, на диск дамп не пишется.
 set +e
-restic_cmd dump "$snapshot_id" /aichat.dump 2>"$WORK/dump.err" </dev/null \
+restic_cmd dump --retry-lock 30m "$snapshot_id" /aichat.dump 2>"$WORK/dump.err" </dev/null \
     | db_restore -d restore_test --no-owner >"$WORK/restore.out" 2>"$WORK/restore.err"
 pipe_rc=("${PIPESTATUS[@]}")
 set -e
