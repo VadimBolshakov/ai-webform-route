@@ -11,6 +11,9 @@ After=network-online.target docker.service aichat-backup.service
 Type=oneshot
 ExecStart=/opt/aichat/ops/backup/restore-test.sh
 User=root
+# Рабочая папка проекта: в /opt/aichat/.env задан относительный COMPOSE_FILE
+# (docker-compose.yml:docker-compose.prod.yml), а docker compose считает его от текущей папки.
+WorkingDirectory=/opt/aichat
 TimeoutStartSec=2h
 # KillMode по умолчанию (control-group); 90 с хватает, чтобы restore-test.sh удалил временную
 # базу, записал статус и отправил пинг /fail.

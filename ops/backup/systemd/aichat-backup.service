@@ -9,6 +9,9 @@ After=network-online.target docker.service
 Type=oneshot
 ExecStart=/opt/aichat/ops/backup/backup.sh
 User=root
+# Рабочая папка проекта: в /opt/aichat/.env задан относительный COMPOSE_FILE
+# (docker-compose.yml:docker-compose.prod.yml), а docker compose считает его от текущей папки.
+WorkingDirectory=/opt/aichat
 TimeoutStartSec=2h
 # KillMode по умолчанию (control-group): SIGTERM получают все процессы юнита; 90 с хватает,
 # чтобы backup.sh удалил неполный снапшот, записал статус и отправил пинг /fail.
