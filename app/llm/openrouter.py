@@ -135,7 +135,7 @@ class OpenRouterClient:
         if self._last_alert is not None and now - self._last_alert < ALERT_INTERVAL_S:
             return
         self._last_alert = now
-        await self._alert(f"OpenRouter: ошибка ключа или баланса (HTTP {code})")
+        await self._alert(f"OpenRouter: key or balance error (HTTP {code})")
 
     async def _raise_for_status(self, resp: httpx.Response) -> None:
         if resp.status_code < 400:

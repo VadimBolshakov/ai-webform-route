@@ -60,7 +60,7 @@ def system_prompt(user: User) -> str:
 
 
 def context_overflow(user: User, new_user_content: list[dict] | str, budget: int) -> str | None:
-    """Ошибка для пользователя, если системный промпт + новое сообщение не влезают в бюджет."""
+    """User-facing error if the system prompt + new message do not fit the budget."""
     used = estimate_tokens(system_prompt(user)) + _estimate_content(new_user_content)
     if used <= budget:
         return None

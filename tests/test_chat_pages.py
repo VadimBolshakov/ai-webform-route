@@ -39,7 +39,7 @@ async def chats_with_times(db, user, n: int) -> list[Chat]:
 async def test_chat_page_lists_last_10_chats(client, db):
     u, _ = await signed_in(client, db)
     chats = await chats_with_times(db, u, 12)
-    chats[0].pinned = True  # самый старый, но закреплён
+    chats[0].pinned = True  # the oldest, but pinned
     await db.commit()
     r = await client.get(f"/app/chats/{chats[5].id}")
     assert r.status_code == 200
@@ -77,13 +77,13 @@ async def test_chat_page_escapes_message_html(client, db):
     assert XSS_IMG not in html and XSS_SCRIPT not in html
     assert "&lt;img src=x onerror=alert(1)&gt;" in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
-    # Сообщения — в <template class="md">, текст экранирован.
+    # Messages are in <template class="md">, the text is escaped.
     assert '<template class="md">&lt;img src=x onerror=alert(1)&gt;</template>' in html
-    # Строгий CSP: только внешние скрипты, никаких inline-стилей и on*-атрибутов.
+    # Strict CSP: only external scripts, no inline styles or on* attributes.
     for tag in re.findall(r"<script\b[^>]*>", html):
         assert 'src="/static/' in tag
-    assert re.search(r"<script\b[^>]*>\s*[^<\s]", html) is None  # нет inline-кода
-    for tag in re.findall(r"<[a-zA-Z][^>]*>", html):  # только настоящие теги
+    assert re.search(r"<script\b[^>]*>\s*[^<\s]", html) is None  # no inline code
+    for tag in re.findall(r"<[a-zA-Z][^>]*>", html):  # real tags only
         assert re.search(r"\s(style|on[a-z]+)=", tag) is None, tag
     assert "javascript:" not in html
 
@@ -105,7 +105,7 @@ async def test_chat_page_shell(client, db):
     assert "Расход: $1.20 / $5.00" in html
     assert 'href="/app/settings"' in html
     assert 'href="/app/admin"' not in html
-    # Порядок: библиотеки, затем chat.js.
+    # Order: libraries, then chat.js.
     scripts = re.findall(r'<script src="([^"]+)"></script>', html)
     assert scripts == [
         "/static/vendor/htmx.min.js",
@@ -114,13 +114,13 @@ async def test_chat_page_shell(client, db):
         "/static/vendor/highlight.min.js",
         "/static/chat.js",
     ]
-    # Ответы модели вне обработки htmx (data-hx-*/hx-* в Markdown не должны срабатывать).
+    # Model answers are outside htmx processing (data-hx-*/hx-* in Markdown must not fire).
     assert re.search(r'<div id="messages"[^>]*\shx-disable[\s>]', html)
     assert r.headers["cache-control"] == "no-store"
 
 
 async def test_admin_sees_admin_link(client, db):
-    # Админу без 2FA всё перенаправляется на /app/settings/2fa — включаем флаг.
+    # For an admin without 2FA everything is redirected to /app/settings/2fa - we enable the flag.
     u, _ = await signed_in(client, db, "boss")
     u.role, u.totp_enabled = "admin", True
     await db.commit()
@@ -176,7 +176,7 @@ async def test_model_selector_lists_enabled_only(client, db):
     html = (await client.get(f"/app/chats/{chat.id}")).text
     select_html = re.search(r'<select name="model".*?</select>', html, re.S).group(0)
     values = re.findall(r'<option value="([^"]*)"', select_html)
-    assert values == ["openrouter/auto", "vendor/on", "vendor/fav"]  # по имени
+    assert values == ["openrouter/auto", "vendor/on", "vendor/fav"]  # by name
     assert '<option value="vendor/fav" selected>' in select_html
     assert "vendor/off" not in html
 
@@ -261,7 +261,7 @@ async def test_chat_actions_foreign_404_and_csrf(client, db):
         r = await client.post(
             f"/app/chats/{mine.id}/{action}", data={"title": "x", "csrf_token": csrf}
         )
-        assert r.status_code == 403  # только заголовок
+        assert r.status_code == 403  # header only
     await db.refresh(foreign)
     await db.refresh(mine)
     assert foreign.title == "чужой" and not foreign.pinned
@@ -273,7 +273,7 @@ async def test_rename_rejects_non_urlencoded_and_large_body(client, db):
     chat = await make_chat(db, u, "мой")
     h = {"X-CSRF-Token": csrf}
     r = await client.post(f"/app/chats/{chat.id}/rename", files={"title": (None, "x")}, headers=h)
-    assert r.status_code == 404  # multipart отсекает BodyLimitMiddleware (нейтральный 404)
+    assert r.status_code == 404  # multipart is cut off by BodyLimitMiddleware (neutral 404)
     r = await client.post(
         f"/app/chats/{chat.id}/rename", data={"title": "x" * 20_000}, headers=h
     )
@@ -302,7 +302,7 @@ async def test_all_chats_search(client, db):
     assert r.status_code == 200
     assert sorted(listed_titles(r.text)) == ["Python asyncio", "заметки PYTHON"]
     r = await client.get("/app/chats/all", params={"q": "%"})
-    assert listed_titles(r.text) == ["100% готово"]  # % и _ ищутся буквально
+    assert listed_titles(r.text) == ["100% готово"]  # % and _ are searched literally
     r = await client.get("/app/chats/all", params={"q": "_"})
     assert listed_titles(r.text) == []
     r = await client.get("/app/chats/all", params={"q": "<b>"})
@@ -348,7 +348,7 @@ def test_chat_js_sanitizer_options():
     ):
         assert needle in js, needle
     assert "innerHTML = DOMPurify.sanitize(" in js
-    # Единственное присваивание innerHTML — результат DOMPurify.
+    # The only innerHTML assignment is the DOMPurify result.
     assert js.count("innerHTML") == 1
 
 

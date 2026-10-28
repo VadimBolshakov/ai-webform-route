@@ -48,7 +48,7 @@ class BodyLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        # Несколько Content-Type: middleware и Starlette могли бы прочитать разные значения.
+        # Multiple Content-Type headers: the middleware and Starlette could read different values.
         if sum(1 for k, _ in scope["headers"] if k.lower() == b"content-type") > 1:
             await self._reject(scope, receive, send, 415)
             return
@@ -64,12 +64,12 @@ class BodyLimitMiddleware:
             await self._reject(scope, receive, send, 413)
             return
 
-        # Тело читается целиком (не больше лимита) и отдаётся приложению одним сообщением.
+        # The body is read in full (no more than the limit) and handed to the app as a single message.
         body = bytearray()
         while True:
             message = await receive()
             if message["type"] != "http.request":
-                return  # клиент отключился, не дослав тело — отвечать некому
+                return  # the client disconnected before sending the whole body - nobody to answer
             body += message.get("body", b"")
             if len(body) > MAX_BODY_BYTES:
                 await self._reject(scope, receive, send, 413)

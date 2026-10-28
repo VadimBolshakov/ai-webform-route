@@ -46,7 +46,7 @@ async def test_totp_login_requires_code(client, db, settings):
     pending_sid = client.cookies[COOKIE_NAME]
     r = await submit(client, db, pyotp.TOTP(secret).now())
     assert r.status_code == 303 and r.headers["location"] == "/app"
-    assert client.cookies[COOKIE_NAME] != pending_sid  # ротация ID
+    assert client.cookies[COOKIE_NAME] != pending_sid  # ID rotation
     rows = (await db.execute(select(AuthSession))).scalars().all()
     assert len(rows) == 1 and rows[0].totp_pending is False
     assert (await client.get("/app/probe")).status_code == 200
@@ -82,7 +82,7 @@ async def test_totp_failures_not_reset_by_new_password_login(client, db, setting
     await login(client)
     for _ in range(4):
         await submit(client, db, "000000")
-    # Новый вход по паролю не обнуляет счётчик: следующий неверный код блокирует.
+    # A new password login does not reset the counter: the next wrong code locks.
     await login(client)
     r = await submit(client, db, "000000")
     assert r.status_code == 303
@@ -99,7 +99,7 @@ async def test_totp_replay_rejected_on_login(client, db, settings):
     await login(client)
     r = await submit(client, db, code)
     assert r.status_code == 401
-    # Код следующего шага принимается.
+    # A code of the next step is accepted.
     nxt = pyotp.TOTP(secret).at(time.time() + 30)
     r = await submit(client, db, nxt)
     assert r.status_code == 303 and r.headers["location"] == "/app"
@@ -167,7 +167,7 @@ async def test_enable_totp_flow(client, db, settings):
     await db.refresh(u)
     assert u.totp_enabled is True and u.totp_last_step is not None
     assert "totp_enabled" in (await db.execute(select(AuditLog.event))).scalars().all()
-    # Ротация ID текущей сессии и отзыв остальных.
+    # Rotation of the current session ID and revocation of the others.
     assert client.cookies[COOKIE_NAME] != old_sid
     rows = (await db.execute(select(AuthSession))).scalars().all()
     assert len(rows) == 1 and rows[0].id not in old_ids and rows[0].totp_pending is False
@@ -175,7 +175,7 @@ async def test_enable_totp_flow(client, db, settings):
     new_token = await csrf(db)
     assert new_token != token and new_token == rows[0].csrf_token
     token = new_token
-    # Тот же код повторно (для disable) отвергается как повтор.
+    # The same code again (for disable) is rejected as a replay.
     r = await client.post(
         "/app/settings/2fa/disable",
         data={"code": code, "password": PASSWORD, "csrf_token": token},
@@ -241,7 +241,7 @@ async def test_disable_lockout_after_5_failures(client, db, settings):
     assert (await db.scalar(select(func.count()).select_from(AuthSession))) == 0
     await db.refresh(u)
     assert u.locked_until is not None
-    # Использованная сессия отозвана: верные данные уже не проходят.
+    # The used session is revoked: correct credentials no longer pass.
     good = {"code": nxt, "password": PASSWORD, "csrf_token": token}
     assert (await client.post("/app/settings/2fa/disable", data=good)).status_code == 404
     await db.refresh(u)
@@ -273,11 +273,11 @@ async def test_disable_refused_while_locked(client, db, settings):
 
 async def test_totp_page_without_pending_session_redirects_to_login(client, db, settings):
     ref = await client.get("/nonexistent")
-    r = await client.get(TOTP)  # нет cookie
+    r = await client.get(TOTP)  # no cookie
     assert r.status_code == 303 and r.headers["location"] == LOGIN
     r = await client.post(TOTP, data={"code": "123456"})
     assert r.status_code == 303 and r.headers["location"] == LOGIN
-    # неверный токен входа — по-прежнему нейтральный 404
+    # wrong login token - still a neutral 404
     r = await client.get("/a/wrong-token/totp")
     assert r.status_code == 404 and r.content == ref.content
 

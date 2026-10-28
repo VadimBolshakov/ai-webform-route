@@ -23,7 +23,7 @@ async def create_admin(db: AsyncSession, username: str, password: str) -> User:
         raise ValueError("; ".join(errors))
     existing = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
     if existing:
-        raise ValueError(f"Пользователь {username} уже существует.")
+        raise ValueError(f"User {username} already exists.")
     user = User(
         username=username,
         password_hash=hash_password(password),
@@ -43,12 +43,12 @@ async def _user_for_update(db: AsyncSession, username: str) -> User:
         await db.execute(select(User).where(User.username == username).with_for_update())
     ).scalar_one_or_none()
     if user is None:
-        raise ValueError(f"Пользователь {username} не найден.")
+        raise ValueError(f"User {username} not found.")
     return user
 
 
 async def reset_2fa(db: AsyncSession, username: str) -> User:
-    """Восстановление доступа: 2FA выключена, все сессии отозваны (админ настроит заново)."""
+    """Access recovery: 2FA disabled, all sessions revoked (the admin will set it up again)."""
     user = await _user_for_update(db, username)
     user.totp_enabled = False
     user.totp_secret_enc = None
@@ -86,9 +86,9 @@ async def _run(fn, *args) -> None:
 
 
 def _ask_password() -> str | None:
-    pw = getpass.getpass("Пароль: ")
-    if pw != getpass.getpass("Повторите пароль: "):
-        print("Пароли не совпадают.", file=sys.stderr)
+    pw = getpass.getpass("Password: ")
+    if pw != getpass.getpass("Repeat password: "):
+        print("Passwords do not match.", file=sys.stderr)
         return None
     return pw
 
@@ -102,20 +102,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "reset-2fa":
             asyncio.run(_run(reset_2fa, args.username))
-            print(f"2FA для {args.username} сброшена, сессии отозваны.")
+            print(f"2FA for {args.username} reset, sessions revoked.")
             return 0
         pw = _ask_password()
         if pw is None:
             return 1
         if args.cmd == "reset-password":
             asyncio.run(_run(reset_password, args.username, pw))
-            print(f"Пароль {args.username} изменён, сессии отозваны.")
+            print(f"Password for {args.username} changed, sessions revoked.")
             return 0
         asyncio.run(_run(create_admin, args.username, pw))
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
-    print(f"Администратор {args.username} создан.")
+    print(f"Administrator {args.username} created.")
     return 0
 
 

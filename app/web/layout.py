@@ -1,4 +1,4 @@
-"""Контекст общего шаблона (боковая панель, меню пользователя, композер)."""
+"""Context of the shared template (sidebar, user menu, composer)."""
 
 from decimal import Decimal
 

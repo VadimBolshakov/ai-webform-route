@@ -1,5 +1,5 @@
-# Локальная проверка: линтер, тесты, аудит зависимостей, shellcheck скриптов бэкапа.
-# Требуется поднятая БД: docker compose up -d db (порт хоста берётся из DB_HOST_PORT, по умолчанию 5433).
+# Local check: linter, tests, dependency audit, shellcheck of the backup scripts.
+# Requires a running DB: docker compose up -d db (the host port comes from DB_HOST_PORT, default 5433).
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -18,10 +18,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $py -m pip_audit
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# shellcheck в закреплённом образе (в нём нет shell, поэтому список файлов собирается здесь).
-# Вывод docker (в т. ч. stderr при скачивании образа) идёт напрямую в консоль: в PowerShell 5.1
-# перенаправление stderr внешней программы при $ErrorActionPreference = "Stop" валит скрипт.
-# Итог определяется только кодом выхода.
+# shellcheck in a pinned image (it has no shell, so the file list is built here).
+# docker output (including stderr while pulling the image) goes straight to the console: in PowerShell 5.1
+# redirecting an external program's stderr with $ErrorActionPreference = "Stop" kills the script.
+# The result is determined only by the exit code.
 $shellcheckImage = "koalaman/shellcheck:v0.11.0"
 $scripts = @(Get-ChildItem ops/backup/*.sh | ForEach-Object { "ops/backup/$($_.Name)" }) + "ops/backup/test/run.sh"
 $ErrorActionPreference = "Continue"
@@ -30,4 +30,4 @@ $shellcheckExit = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 if ($shellcheckExit -ne 0) { exit $shellcheckExit }
 
-Write-Host "Все проверки пройдены."
+Write-Host "All checks passed."

@@ -1,7 +1,7 @@
-"""Фейковый healthchecks.io для тестов: записывает каждый запрос в /tmp/hc/requests.jsonl.
+"""Fake healthchecks.io for tests: records every request to /tmp/hc/requests.jsonl.
 
-Строка журнала: {"method", "path", "body", "size" (байт в теле)}. Запрос на /reset очищает журнал
-(и сам не записывается).
+Log line: {"method", "path", "body", "size" (bytes in the body)}. A request to /reset clears the log
+(and is not recorded itself).
 """
 
 import json
@@ -37,7 +37,7 @@ class Handler(BaseHTTPRequestHandler):
 
     do_GET = do_POST = _handle
 
-    def log_message(self, format, *args):  # noqa: A002 — сигнатура базового класса
+    def log_message(self, format, *args):  # noqa: A002 - base class signature
         pass
 
 

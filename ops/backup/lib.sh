@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# Общие функции скриптов бэкапа. Подключение: . "$(dirname "$0")/lib.sh"
-# Переменные ниже можно переопределить окружением (тесты: ops/backup/test/compose.yml);
-# без переопределения действуют значения для сервера.
+# Shared functions of the backup scripts. Usage: . "$(dirname "$0")/lib.sh"
+# The variables below can be overridden by the environment (tests: ops/backup/test/compose.yml);
+# without an override the server values apply.
 
 AICHAT_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -18,7 +18,7 @@ fi
 : "${PG_DUMP_CMD:=docker compose --project-directory /opt/aichat exec -T db pg_dump -U aichat -Fc aichat}"
 : "${PSQL_CMD:=docker compose --project-directory /opt/aichat exec -T db psql -U aichat -v ON_ERROR_STOP=1}"
 : "${PG_RESTORE_CMD:=docker compose --project-directory /opt/aichat exec -T db pg_restore -U aichat}"
-# Для restic, запущенного без docker (тесты), пароль берётся из этого файла.
+# For restic run without docker (tests), the password is taken from this file.
 export RESTIC_PASSWORD_FILE
 
 log() { printf 'aichat-backup: %s\n' "$*" >&2; }
@@ -28,41 +28,41 @@ die() {
     exit 1
 }
 
-# Загружает /etc/aichat/restic.env (KEY=VALUE без кавычек) и экспортирует переменные.
+# Loads /etc/aichat/restic.env (KEY=VALUE without quotes) and exports the variables.
 load_env_file() {
-    [[ -f "$AICHAT_BACKUP_ENV" ]] || die "Нет $AICHAT_BACKUP_ENV"
+    [[ -f "$AICHAT_BACKUP_ENV" ]] || die "Missing $AICHAT_BACKUP_ENV"
     set -a
     # shellcheck source=/dev/null
-    . "$AICHAT_BACKUP_ENV" || die "Не удалось прочитать $AICHAT_BACKUP_ENV"
+    . "$AICHAT_BACKUP_ENV" || die "Could not read $AICHAT_BACKUP_ENV"
     set +a
-    [[ -n "${RESTIC_REPOSITORY:-}" ]] || die "В $AICHAT_BACKUP_ENV не задан RESTIC_REPOSITORY"
+    [[ -n "${RESTIC_REPOSITORY:-}" ]] || die "RESTIC_REPOSITORY is not set in $AICHAT_BACKUP_ENV"
 }
 
-# load_env_file + проверка, что файл пароля репозитория есть и не пуст.
+# load_env_file + check that the repository password file exists and is not empty.
 load_env() {
     load_env_file
-    [[ -s "$RESTIC_PASSWORD_FILE" ]] || die "Нет файла пароля репозитория $RESTIC_PASSWORD_FILE (или он пуст)"
+    [[ -s "$RESTIC_PASSWORD_FILE" ]] || die "Repository password file $RESTIC_PASSWORD_FILE is missing (or empty)"
 }
 
-# Команды из переменных выполняются через eval: в них могут быть кавычки (переопределения в тестах).
+# Commands from variables run via eval: they may contain quotes (overrides in tests).
 restic_cmd() { eval "$RESTIC_CMD"' "$@"'; }
 db_dump() { eval "$PG_DUMP_CMD"; }
 db_psql() { eval "$PSQL_CMD"' "$@"'; }
 db_restore() { eval "$PG_RESTORE_CMD"' "$@"'; }
 
-# repo_exists: 0 — репозиторий есть; 1 — restic сообщил, что репозитория нет (код 10 или текст
-# «repository does not exist»); 2 — другая ошибка
-# (сеть, ключи, пароль). Вывод restic не печатает; при 1 и 2 текст ошибки — в REPO_EXISTS_ERROR.
-# При сетевых ошибках и неверных ключах restic повторяет запрос до 15 минут, поэтому проверка
-# ограничена AICHAT_REPO_CHECK_TIMEOUT секундами (по умолчанию 120); истечение — код 2.
+# repo_exists: 0 - the repository exists; 1 - restic reported there is no repository (code 10 or the text
+# "repository does not exist"); 2 - another error
+# (network, keys, password). It does not print restic output; for 1 and 2 the error text is in REPO_EXISTS_ERROR.
+# On network errors and wrong keys restic retries the request for up to 15 minutes, so the check
+# is limited to AICHAT_REPO_CHECK_TIMEOUT seconds (default 120); expiry gives code 2.
 : "${AICHAT_REPO_CHECK_TIMEOUT:=120}"
-# shellcheck disable=SC2034  # REPO_EXISTS_ERROR читают вызывающие скрипты
+# shellcheck disable=SC2034  # REPO_EXISTS_ERROR is read by the calling scripts
 REPO_EXISTS_ERROR=""
-# shellcheck disable=SC2034  # присваивание REPO_EXISTS_ERROR внутри функции
+# shellcheck disable=SC2034  # REPO_EXISTS_ERROR is assigned inside the function
 repo_exists() {
     local rc=0 out retry
     [[ "$AICHAT_REPO_CHECK_TIMEOUT" =~ ^[0-9]+$ ]] \
-        || die "AICHAT_REPO_CHECK_TIMEOUT должен быть целым числом секунд"
+        || die "AICHAT_REPO_CHECK_TIMEOUT must be an integer number of seconds"
     out=$(eval "timeout $AICHAT_REPO_CHECK_TIMEOUT $RESTIC_CMD cat config" 2>&1 >/dev/null </dev/null) || rc=$?
     REPO_EXISTS_ERROR=$out
     if ((rc == 0)); then
@@ -71,7 +71,7 @@ repo_exists() {
     fi
     if ((rc == 124)); then
         retry=$(printf '%s\n' "$out" | grep -m 1 'returned error, retrying' | sed 's/^.*retrying after [^:]*: //') || true
-        REPO_EXISTS_ERROR="restic не ответил за $AICHAT_REPO_CHECK_TIMEOUT с (сеть или S3 недоступны?)${retry:+: $retry}"
+        REPO_EXISTS_ERROR="restic did not answer within $AICHAT_REPO_CHECK_TIMEOUT s (network or S3 unavailable?)${retry:+: $retry}"
         return 2
     fi
     if ((rc == 10)) || [[ "$out" == *"repository does not exist"* ]]; then
@@ -80,17 +80,17 @@ repo_exists() {
     return 2
 }
 
-# hc_ping <url> <start|ok|fail> [body] — пинг healthchecks.io; сбой пинга не меняет код выхода.
-# URL передаётся curl через конфиг на дескрипторе, а не аргументом (не виден в ps); в журнал не пишется.
+# hc_ping <url> <start|ok|fail> [body] - healthchecks.io ping; a ping failure does not change the exit code.
+# The URL is passed to curl via a config on a descriptor, not as an argument (not visible in ps); it is not written to the journal.
 hc_ping() {
     local url=${1:-} suffix=${2:-} body=${3-} target rc=0
     if [[ -z "$url" ]]; then
-        log "healthchecks: URL не задан, пинг пропущен"
+        log "healthchecks: URL not set, ping skipped"
         return 0
     fi
-    # URL попадает в конфиг curl в кавычках: кавычка, обратный слэш и перевод строки недопустимы.
+    # The URL goes into the curl config in quotes: a quote, backslash and newline are not allowed.
     if [[ "$url" == *[\"\\]* || "$url" == *$'\n'* ]]; then
-        log "healthchecks: недопустимые символы в URL, пинг пропущен"
+        log "healthchecks: invalid characters in URL, ping skipped"
         return 0
     fi
     url=${url%/}
@@ -99,7 +99,7 @@ hc_ping() {
         ok) target="$url" ;;
         fail) target="$url/fail" ;;
         *)
-            log "healthchecks: неизвестный тип пинга «$suffix», пинг пропущен"
+            log "healthchecks: unknown ping type '$suffix', ping skipped"
             return 0
             ;;
     esac
@@ -108,12 +108,12 @@ hc_ping() {
     printf '%s' "$body" | curl -fsS -m 10 --retry 3 -o /dev/null --data-binary @- \
         -K <(printf 'url = "%s"\n' "$target") 2>/dev/null || rc=$?
     if ((rc != 0)); then
-        log "healthchecks: пинг «$suffix» не доставлен (curl, код $rc)"
+        log "healthchecks: ping '$suffix' not delivered (curl, code $rc)"
     fi
     return 0
 }
 
-# write_status <file> <json> — атомарная запись; file — имя в $AICHAT_STATE_DIR или полный путь.
+# write_status <file> <json> - atomic write; file is a name in $AICHAT_STATE_DIR or a full path.
 write_status() {
     local file=$1 json=$2 tmp
     [[ "$file" == */* ]] || file="$AICHAT_STATE_DIR/$file"
@@ -125,8 +125,8 @@ write_status() {
 
 now_epoch() { printf '%s\n' "${AICHAT_NOW:-$(date +%s)}"; }
 
-# redact <text> — печатает text (без перевода строки в конце), заменив на «***» значения секретов:
-# пароль репозитория, ключи AWS, URL пингов healthchecks.io.
+# redact <text> - prints text (without a trailing newline), replacing secret values with "***":
+# the repository password, AWS keys, healthchecks.io ping URLs.
 redact() {
     local text=$1 secret pw="" hb=${HC_BACKUP_URL:-} hr=${HC_RESTORE_URL:-}
     if [[ -r "$RESTIC_PASSWORD_FILE" ]]; then pw=$(<"$RESTIC_PASSWORD_FILE"); fi
@@ -136,8 +136,8 @@ redact() {
     printf '%s' "$text"
 }
 
-# error_text <first|last> <text> — первая или последняя непустая строка text (для JSON-ошибки
-# restic --json — её поле message) без секретов, обрезанная до 1024 байт; пусто, если строк нет.
+# error_text <first|last> <text> - the first or last non-empty line of text (for a JSON error
+# from restic --json - its message field) without secrets, truncated to 1024 bytes; empty if there are no lines.
 error_text() {
     local which=$1 text=$2 line msg
     if [[ "$which" == first ]]; then
@@ -154,80 +154,80 @@ error_text() {
     printf '%s' "${line:0:1024}"
 }
 
-# iso_to_epoch <время RFC3339> — эпоха; доли секунды (restic пишет наносекунды) и смещение пояса допустимы.
+# iso_to_epoch <RFC3339 time> - epoch; fractional seconds (restic writes nanoseconds) and a timezone offset are allowed.
 iso_to_epoch() {
     local t=$1
     if [[ "$t" =~ ^(.*:[0-9]{2})\.[0-9]+(.*)$ ]]; then t=${BASH_REMATCH[1]}${BASH_REMATCH[2]}; fi
     date -u -d "$t" +%s 2>/dev/null
 }
 
-# now_iso — now_epoch как UTC-время вида 2026-01-01T03:30:00Z.
+# now_iso - now_epoch as a UTC time like 2026-01-01T03:30:00Z.
 now_iso() { date -u -d "@$(now_epoch)" +%Y-%m-%dT%H:%M:%SZ; }
 
-# --- каркас скрипта с отчётом (backup.sh, restore-test.sh) -------------------------------------
-# Скрипт до вызова этих функций задаёт: STATUS_FILE (имя в $AICHAT_STATE_DIR), PING_URL_VAR (имя
-# переменной с URL пинга, например HC_BACKUP_URL), INTERRUPTED (текст ошибки при сигнале),
-# функцию status_error <текст> (печатает JSON статуса с ошибкой) и, после load_env_or_report,
-# каталог WORK для вывода шагов (mktemp -d — права 700). Функции — с вырезанием секретов (redact).
-# shellcheck disable=SC2034  # REPORTED и SIG_RC читают и меняют вызывающие скрипты
-REPORTED=0 # итог (статус + пинг) уже отправлен
+# --- reporting script skeleton (backup.sh, restore-test.sh) -------------------------------------
+# Before calling these functions the script sets: STATUS_FILE (name in $AICHAT_STATE_DIR), PING_URL_VAR (name of the
+# variable holding the ping URL, e.g. HC_BACKUP_URL), INTERRUPTED (error text on a signal),
+# the function status_error <text> (prints the status JSON with an error) and, after load_env_or_report,
+# the WORK directory for step output (mktemp -d - mode 700). The functions strip secrets (redact).
+# shellcheck disable=SC2034  # REPORTED and SIG_RC are read and changed by the calling scripts
+REPORTED=0 # the result (status + ping) has already been sent
 # shellcheck disable=SC2034
-SIG_RC=0 # пришёл SIGTERM/SIGINT (143/130); проверяется после каждого шага
+SIG_RC=0 # SIGTERM/SIGINT arrived (143/130); checked after each step
 
-# Ошибка env-файла или пароля: URL пинга неизвестен — только журнал и статус (старый «ok» не остаётся).
-# Иначе загружает окружение в текущий shell.
+# Env-file or password error: the ping URL is unknown - only the journal and status (a stale "ok" does not remain).
+# Otherwise loads the environment into the current shell.
 load_env_or_report() {
     local env_err
     if ! env_err=$( (load_env) 2>&1 >/dev/null); then
         printf '%s\n' "$env_err" >&2
         env_err=$(error_text last "$env_err")
         write_status "$STATUS_FILE" "$(status_error "${env_err#aichat-backup: }")" \
-            || log "Не удалось записать $STATUS_FILE"
+            || log "Could not write $STATUS_FILE"
         exit 1
     fi
     load_env
 }
 
-# report_error <текст без секретов> — статус с ошибкой и пинг /fail.
+# report_error <text without secrets> - status with an error and a /fail ping.
 report_error() {
-    # shellcheck disable=SC2034  # REPORTED и LAST_ERROR читает trap EXIT вызывающего скрипта
+    # shellcheck disable=SC2034  # REPORTED and LAST_ERROR are read by the caller's trap EXIT
     REPORTED=1
     # shellcheck disable=SC2034
     LAST_ERROR=$1
-    write_status "$STATUS_FILE" "$(status_error "$1")" || log "Не удалось записать $STATUS_FILE"
+    write_status "$STATUS_FILE" "$(status_error "$1")" || log "Could not write $STATUS_FILE"
     hc_ping "${!PING_URL_VAR:-}" fail "$1"
 }
 
-# fail <текст без секретов> — ошибка запуска: журнал, статус, пинг, выход 1 (текст ≤ 1024 байт).
+# fail <text without secrets> - startup error: journal, status, ping, exit 1 (text <= 1024 bytes).
 fail() {
     local LC_ALL=C
     local msg=${1:0:1024}
-    log "Ошибка: $msg"
+    log "Error: $msg"
     report_error "$msg"
     exit 1
 }
 
-# Сигнал только отмечается: текущий шаг завершается, затем скрипт сообщает об ошибке (check_signal).
+# A signal is only noted: the current step finishes, then the script reports the error (check_signal).
 trap_signals() {
     trap 'SIG_RC=143' TERM
     trap 'SIG_RC=130' INT
 }
-# Для trap EXIT: повторный сигнал не должен прервать запись статуса и пинг /fail.
+# For trap EXIT: a repeated signal must not interrupt writing the status and the /fail ping.
 ignore_signals() { trap '' TERM INT; }
 
 check_signal() {
     ((SIG_RC == 0)) || fail "$INTERRUPTED"
 }
 
-# emit <file> — содержимое файла без секретов.
+# emit <file> - file contents without secrets.
 emit() {
     local text
     text=$(<"$1")
     [[ -z "$text" ]] || printf '%s\n' "$(redact "$text")"
 }
 
-# step <название> <команда...> — stdout и stderr команды (в $WORK/out и $WORK/err) — в журнал без
-# секретов (stdout — если не STEP_SHOW_OUT=0); при ошибке — fail с последней содержательной строкой stderr.
+# step <name> <command...> - the command's stdout and stderr (in $WORK/out and $WORK/err) go to the journal without
+# secrets (stdout unless STEP_SHOW_OUT=0); on error - fail with the last meaningful stderr line.
 step() {
     local name=$1 rc=0 msg
     shift
@@ -237,6 +237,6 @@ step() {
     check_signal
     if ((rc != 0)); then
         msg=$(error_text last "$(<"$WORK/err")")
-        fail "$name: ${msg:-код выхода $rc}"
+        fail "$name: ${msg:-exit code $rc}"
     fi
 }

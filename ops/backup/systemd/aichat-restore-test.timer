@@ -1,7 +1,7 @@
-# 1-го числа каждого месяца в 04:30 по времени сервера.
-# Persistent=true: запуск, пропущенный из-за выключенного сервера, выполняется после загрузки.
+# On the 1st of every month at 04:30 server time.
+# Persistent=true: a run missed because the server was off is executed after boot.
 [Unit]
-Description=AI Chat: проверка восстановления 1-го числа в 04:30
+Description=AI Chat: restore check on the 1st at 04:30
 
 [Timer]
 OnCalendar=*-*-01 04:30:00

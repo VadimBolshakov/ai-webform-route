@@ -81,7 +81,7 @@ def test_main_reset_password_prompts_twice(monkeypatch):
         called.append(args)
 
     monkeypatch.setattr(cli, "_run", fake_run)
-    assert cli.main(["reset-password", "root"]) == 1  # пароли не совпали
+    assert cli.main(["reset-password", "root"]) == 1  # passwords did not match
     assert called == []
     answers = iter([NEW_PW, NEW_PW])
     assert cli.main(["reset-password", "root"]) == 0

@@ -47,7 +47,7 @@ async def authenticate(
     ).scalar_one_or_none()
 
     if len(password) > MAX_LENGTH:
-        # Не хешируем: ограничиваем работу Argon2; считаем обычной неудачей.
+        # Do not hash: limit Argon2 work; treat as an ordinary failure.
         ok = False
     else:
         ok = await asyncio.to_thread(
@@ -67,7 +67,7 @@ async def authenticate(
         return None
 
     if not user.totp_enabled:
-        # С 2FA счётчик сбрасывается только после верного кода (иначе пароль даёт новые 5 попыток).
+        # With 2FA the counter resets only after a correct code (otherwise the password gives 5 new attempts).
         user.failed_logins = 0
         user.locked_until = None
     if needs_rehash(user.password_hash):
@@ -77,21 +77,21 @@ async def authenticate(
 
 
 async def register_failure(db: AsyncSession, user: User, ip: str, notifier: Notifier) -> None:
-    """Неудачная попытка (пароль или код): счётчик, блокировка, алерт."""
+    """Failed attempt (password or code): counter, lockout, alert."""
     user.failed_logins += 1
     if user.failed_logins >= LOCK_THRESHOLD:
         minutes = min(2 ** (user.failed_logins - LOCK_THRESHOLD), 60)
         user.locked_until = utcnow() + timedelta(minutes=minutes)
-    await db.commit()  # счётчик и блокировка сохраняются до любых побочных эффектов
+    await db.commit()  # the counter and lockout are persisted before any side effects
     if user.failed_logins == LOCK_THRESHOLD:
         try:
-            await notifier.alert(f"Серия неудачных входов: {user.username}, IP {ip}")
+            await notifier.alert(f"Series of failed logins: {user.username}, IP {ip}")
         except Exception:
             logger.exception("notifier.alert failed")
 
 
 async def consume_totp(db: AsyncSession, user: User, code: str, fernet_key: str) -> bool:
-    """Проверяет код и атомарно фиксирует шаг; повтор того же (или более раннего) шага отвергается."""
+    """Verifies the code and atomically records the step; reuse of the same (or an earlier) step is rejected."""
     if not user.totp_secret_enc:
         return False
     secret = decrypt(user.totp_secret_enc, fernet_key)

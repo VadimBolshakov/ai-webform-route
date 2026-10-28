@@ -56,7 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if scheduler is not None:
             scheduler.shutdown(wait=False)
         if app.state.background_tasks:
-            # Дать дописать сообщения/usage после стримов и заголовки.
+            # Let messages/usage after streams and titles finish writing.
             await asyncio.wait(list(app.state.background_tasks), timeout=SHUTDOWN_GRACE_S)
         await http.aclose()
         await engine.dispose()
@@ -79,8 +79,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def not_found(scope) -> Response:
         return templates.TemplateResponse(Request(scope), "notfound.html", status_code=404)
 
-    # Последний добавленный — внешний: заголовки попадают и на 403/404/413 от проверок ниже;
-    # лимит тела срабатывает до любого разбора формы.
+    # The last one added is the outermost: headers also land on 403/404/413 from the checks below;
+    # the body limit fires before any form parsing.
     app.add_middleware(OriginCheckMiddleware, base_url=settings.base_url)
     app.add_middleware(BodyLimitMiddleware, not_found=not_found)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -89,7 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_exc(request: Request, exc: RequestValidationError):
         if is_private(request.url.path):
-            # Никакого 422 с эхом ввода на приватных путях.
+            # No 422 echoing input on private paths.
             return templates.TemplateResponse(request, "notfound.html", status_code=404)
         return await request_validation_exception_handler(request, exc)
 
@@ -98,7 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if exc.status_code == 404:
             return templates.TemplateResponse(request, "notfound.html", status_code=404)
         if exc.status_code == 405:
-            # Ни JSON FastAPI на ширме, ни существование приватных маршрутов не раскрываем.
+            # Neither FastAPI's JSON on the facade nor the existence of private routes is revealed.
             return templates.TemplateResponse(request, "notfound.html", status_code=404)
         return await http_exception_handler(request, exc)
 

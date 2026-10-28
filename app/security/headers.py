@@ -49,7 +49,7 @@ DEFAULT_PORTS = {"https": 443, "http": 80}
 
 
 def _origin(value: str) -> str | None:
-    """scheme://host[:port] в нижнем регистре; порт по умолчанию для схемы опускается."""
+    """scheme://host[:port] in lower case; the default port for the scheme is omitted."""
     try:
         parts = urlsplit(value)
         port = parts.port
@@ -58,7 +58,7 @@ def _origin(value: str) -> str | None:
     if not parts.scheme or not parts.hostname:
         return None
     scheme = parts.scheme.lower()
-    host = parts.hostname  # urlsplit уже приводит к нижнему регистру
+    host = parts.hostname  # urlsplit already lowercases it
     if ":" in host:
         host = f"[{host}]"
     if port is None or DEFAULT_PORTS.get(scheme) == port:
@@ -79,7 +79,7 @@ class OriginCheckMiddleware:
             return
         headers = {k.lower(): v for k, v in scope["headers"]}
         raw = headers.get(b"origin") or headers.get(b"referer")
-        # allowed is None (неразбираемый BASE_URL) — запрещаем всё, а не сравниваем None с None.
+        # allowed is None (unparsable BASE_URL) - deny everything rather than compare None with None.
         if self.allowed is None or raw is None or _origin(raw.decode("latin-1")) != self.allowed:
             await send(
                 {

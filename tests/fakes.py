@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from app.llm.openrouter import LLMError, StreamDelta, StreamDone
 
-HANG = object()  # в сценарии стрима: зависнуть (ждать отмены)
+HANG = object()  # in a stream script: hang (wait for cancellation)
 
 
 class FakeNotifier:

@@ -1,7 +1,7 @@
-# Каждую ночь в 03:30 по времени сервера (плюс случайная задержка до 10 минут).
-# Persistent=true: запуск, пропущенный из-за выключенного сервера, выполняется после загрузки.
+# Every night at 03:30 server time (plus a random delay of up to 10 minutes).
+# Persistent=true: a run missed because the server was off is executed after boot.
 [Unit]
-Description=AI Chat: ночной бэкап базы в 03:30
+Description=AI Chat: nightly database backup at 03:30
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

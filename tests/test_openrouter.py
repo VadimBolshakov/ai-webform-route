@@ -138,7 +138,7 @@ async def test_key_or_balance_errors_alert(make_client, notifier, code):
     with pytest.raises(LLMError) as ei:
         await collect(make_client())
     assert ei.value.user_message == "Сервис временно недоступен"
-    assert notifier.alerts == [f"OpenRouter: ошибка ключа или баланса (HTTP {code})"]
+    assert notifier.alerts == [f"OpenRouter: key or balance error (HTTP {code})"]
 
 
 @respx.mock
@@ -341,7 +341,7 @@ async def test_mid_stream_key_error_alerts_and_maps(make_client, notifier):
     assert ei.value.user_message == "Сервис временно недоступен"
     assert ei.value.status == 402
     assert ei.value.generation_id == "gen-7"
-    assert notifier.alerts == ["OpenRouter: ошибка ключа или баланса (HTTP 402)"]
+    assert notifier.alerts == ["OpenRouter: key or balance error (HTTP 402)"]
 
 
 @respx.mock

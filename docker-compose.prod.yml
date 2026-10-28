@@ -1,25 +1,25 @@
-# Переопределения для сервера. Подключается вместе с основным файлом:
+# Server overrides. Used together with the main file:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-# (или COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml в .env — тогда хватит `docker compose ...`).
+# (or COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml in .env - then plain `docker compose ...` is enough).
 services:
   db:
-    # На сервере порт Postgres наружу не нужен вообще (бэкап делается через `docker compose exec`).
+    # On the server the Postgres port is not exposed at all (the backup runs via `docker compose exec`).
     ports: !reset []
 
   caddy:
-    # Настоящий сертификат Let's Encrypt: Caddy нужен 80 (проверка ACME + редирект) и 443.
+    # Real Let's Encrypt certificate: Caddy needs 80 (ACME check + redirect) and 443.
     ports: !override
       - "80:80"
       - "443:443"
     environment:
-      DOMAIN: ${DOMAIN:?задайте DOMAIN в .env}
-      ACME_EMAIL: ${ACME_EMAIL:?задайте ACME_EMAIL в .env}
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
     volumes: !override
       - ./docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    # Локальная проверка через https://localhost/healthz тут не сработает (сертификат на домен) —
-    # проверяем, что жив admin API Caddy внутри контейнера.
+    # A local check via https://localhost/healthz will not work here (the certificate is for the domain) -
+    # so we check that the Caddy admin API is alive inside the container.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
 

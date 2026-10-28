@@ -21,9 +21,9 @@ def verify_totp(secret: str, code: str) -> bool:
 def match_totp_step(
     secret: str, code: str, last_step: int | None = None, now: float | None = None
 ) -> int | None:
-    """Шаг времени, которому соответствует код (окно ±1), либо None.
+    """The time step the code corresponds to (window +-1), or None.
 
-    Шаги <= last_step отвергаются: код нельзя использовать повторно.
+    Steps <= last_step are rejected: a code cannot be reused.
     """
     if not (code.isascii() and code.isdigit()):
         return None

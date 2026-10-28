@@ -1,29 +1,29 @@
-# Ежемесячная проверка восстановления (ops/backup/restore-test.sh). Запускается таймером
-# aichat-restore-test.timer; вручную: sudo systemctl start aichat-restore-test.service
+# Monthly restore check (ops/backup/restore-test.sh). Started by the timer
+# aichat-restore-test.timer; manually: sudo systemctl start aichat-restore-test.service
 [Unit]
-Description=AI Chat: проверка восстановления бэкапа во временную базу
+Description=AI Chat: backup restore check into a temporary database
 Wants=network-online.target
-# After=aichat-backup.service: если оба запуска стоят в очереди (догоняют пропуск после загрузки),
-# проверка ждёт окончания бэкапа.
+# After=aichat-backup.service: if both runs are queued (catching up after boot),
+# the check waits for the backup to finish.
 After=network-online.target docker.service aichat-backup.service
 
 [Service]
 Type=oneshot
 ExecStart=/opt/aichat/ops/backup/restore-test.sh
 User=root
-# Рабочая папка проекта: в /opt/aichat/.env задан относительный COMPOSE_FILE
-# (docker-compose.yml:docker-compose.prod.yml), а docker compose считает его от текущей папки.
+# Project working directory: /opt/aichat/.env sets a relative COMPOSE_FILE
+# (docker-compose.yml:docker-compose.prod.yml), and docker compose resolves it from the current directory.
 WorkingDirectory=/opt/aichat
 TimeoutStartSec=2h
-# KillMode по умолчанию (control-group); 90 с хватает, чтобы restore-test.sh удалил временную
-# базу, записал статус и отправил пинг /fail.
+# Default KillMode (control-group); 90 s is enough for restore-test.sh to drop the temporary
+# database, write the status and send the /fail ping.
 TimeoutStopSec=90s
-# Вся файловая система только для чтения, кроме каталогов ниже. docker CLI при этом работает:
-# подключение к /run/docker.sock — не запись в файловую систему, тома (-v) монтирует dockerd,
-# в $HOME (/root, systemd задаёт его по User=) docker ничего не пишет. Проверено в Ubuntu 24.04.
+# The whole file system is read-only except the directories below. The docker CLI still works:
+# connecting to /run/docker.sock is not a file system write, volumes (-v) are mounted by dockerd,
+# docker writes nothing to $HOME (/root, set by systemd from User=). Verified on Ubuntu 24.04.
 ProtectSystem=strict
-# /var/lib/aichat-backup (статус) и /var/cache/aichat-restic (кэш restic): systemd создаёт их перед
-# запуском, если их нет (например, кэш удалили), и открывает на запись.
+# /var/lib/aichat-backup (status) and /var/cache/aichat-restic (restic cache): systemd creates them before
+# start if they are missing (e.g. the cache was deleted) and makes them writable.
 StateDirectory=aichat-backup
 StateDirectoryMode=0700
 CacheDirectory=aichat-restic

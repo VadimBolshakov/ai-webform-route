@@ -10,7 +10,7 @@ from app.security.tokens import hash_token, new_token
 
 COOKIE_NAME = "__Host-sid"
 SESSION_TTL = timedelta(days=7)
-PENDING_TTL = timedelta(minutes=10)  # окно ввода кода 2FA; не продлевается
+PENDING_TTL = timedelta(minutes=10)  # 2FA code entry window; not extended
 TOUCH_INTERVAL = timedelta(minutes=10)
 
 
@@ -19,7 +19,7 @@ def utcnow() -> datetime:
 
 
 def set_session_cookie(response: Response, raw_id: str, settings: Settings) -> None:
-    # settings пока не влияет на срок: TTL сессии — константа SESSION_TTL (см. create_session).
+    # settings does not affect the lifetime yet: the session TTL is the SESSION_TTL constant (see create_session).
     response.set_cookie(
         COOKIE_NAME,
         raw_id,
@@ -72,13 +72,13 @@ async def get_session(db: AsyncSession, raw_id: str | None) -> AuthSession | Non
 
 async def touch(db: AsyncSession, s: AuthSession) -> None:
     if s.totp_pending:
-        return  # промежуточная сессия живёт фиксированные 10 минут
+        return  # the intermediate session lives a fixed 10 minutes
     now = utcnow()
     if now - s.last_seen < TOUCH_INTERVAL:
         return
     s.last_seen = now
     s.expires_at = now + SESSION_TTL
-    await db.commit()  # иначе скользящий срок откатится на запросах без записи
+    await db.commit()  # otherwise the sliding lifetime would roll back on requests without a write
 
 
 async def revoke(db: AsyncSession, s: AuthSession) -> None:

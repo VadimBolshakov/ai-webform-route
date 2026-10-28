@@ -29,7 +29,7 @@ class AccountError(Exception):
 
 
 class WrongPassword(AccountError):
-    """Неверный пароль; `locked` — достигнут порог блокировки."""
+    """Wrong password; `locked` - the lockout threshold was reached."""
 
     def __init__(self, locked: bool = False) -> None:
         super().__init__("wrong password")
@@ -55,7 +55,7 @@ def money(value: Decimal) -> str:
 def validate_preferences(
     fields: dict[str, str], model_ids: set[str]
 ) -> tuple[dict[str, str] | None, str | None]:
-    """→ (значения, None) или (None, сообщение об ошибке по-русски)."""
+    """-> (values, None) or (None, error message in Russian)."""
     language = fields.get("answer_language", "")
     theme = fields.get("theme", "")
     prompt = clean_text(fields.get("system_prompt", "")).replace("\r\n", "\n").replace("\r", "\n")
@@ -79,10 +79,10 @@ def validate_preferences(
 async def check_password(
     db: AsyncSession, user: User, password: str, ip: str, notifier: Notifier
 ) -> None:
-    """Проверяет текущий пароль с семантикой блокировки (как отключение 2FA).
+    """Checks the current password with lockout semantics (like disabling 2FA).
 
-    `user` должен быть заблокирован FOR UPDATE вызывающим. Неудача считается в
-    register_failure (коммитит счётчик); при достижении порога — WrongPassword(locked=True).
+    `user` must be locked FOR UPDATE by the caller. A failure is counted in
+    register_failure (commits the counter); on reaching the threshold - WrongPassword(locked=True).
     """
     if user.locked_until is not None and user.locked_until > utcnow():
         raise AccountLocked()
@@ -196,11 +196,11 @@ async def delete_account(
     ip: str = "",
     notifier: Notifier | None = None,
 ) -> None:
-    """Удаляет аккаунт. Админ — запрещено; неверный пароль — WrongPassword (с блокировкой)."""
+    """Deletes the account. Admin - forbidden; wrong password - WrongPassword (with lockout)."""
     notifier = notifier or LogNotifier()
     if user.role == "admin":
         raise AdminForbidden()
-    # Строка пользователя блокируется на время проверки пароля и удаления.
+    # The user row is locked for the duration of the password check and deletion.
     user = (
         await db.execute(
             select(User)
@@ -209,7 +209,7 @@ async def delete_account(
             .execution_options(populate_existing=True)
         )
     ).scalar_one()
-    if user.role == "admin":  # роль могла измениться до блокировки строки
+    if user.role == "admin":  # the role could have changed before the row was locked
         raise AdminForbidden()
     await check_password(db, user, password, ip, notifier)
 
@@ -217,7 +217,7 @@ async def delete_account(
     username = user.username
     label = deleted_label(uid)
     await db.execute(update(Usage).where(Usage.user_id == uid).values(user_label=label))
-    # Строки по user_id и «осиротевшие» (без user_id, но с именем): метка, имя в details, IP.
+    # Rows by user_id and "orphaned" ones (no user_id but with a name): label, name in details, IP.
     no_name = AuditLog.details.op("-")("username")
     await db.execute(
         update(AuditLog)
@@ -227,13 +227,13 @@ async def delete_account(
         )
         .values(user_label=label, details=no_name, ip="")
     )
-    # IP — персональные данные: у записей удалённого аккаунта не хранится (колонка NOT NULL → "").
+    # IP is personal data: not kept for records of a deleted account (NOT NULL column -> "").
     db.add(AuditLog(event="account_deleted", user_id=uid, user_label=label, ip="", details={}))
     await db.flush()
-    await db.execute(delete(User).where(User.id == uid))  # каскад: сессии, чаты, сообщения
+    await db.execute(delete(User).where(User.id == uid))  # cascade: sessions, chats, messages
     db.expunge(user)
     await db.commit()
     try:
-        await notifier.alert(f"Аккаунт удалён: {label}")
+        await notifier.alert(f"Account deleted: {label}")
     except Exception:
         logger.exception("notifier.alert failed")

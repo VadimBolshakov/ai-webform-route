@@ -1,4 +1,4 @@
-"""Фоновые задачи (APScheduler). Функции принимают фабрику сессий/клиентов — тесты вызывают их напрямую."""
+"""Background jobs (APScheduler). Functions take a session/client factory - tests call them directly."""
 
 import logging
 from datetime import timedelta
@@ -20,7 +20,7 @@ BACKFILL_BATCH = 50
 
 
 async def cleanup_expired(factory) -> dict[str, int]:
-    """Чистит просроченные сессии, давно просроченные инвайты, анонимные login_fail и limit_reached."""
+    """Cleans expired sessions, long-expired invites, anonymous login_fail and limit_reached."""
     now = utcnow()
     async with factory() as db:
         sessions = await db.execute(delete(AuthSession).where(AuthSession.expires_at < now))
@@ -49,11 +49,11 @@ async def cleanup_expired(factory) -> dict[str, int]:
 
 
 async def backfill_costs(factory, llm, notifier) -> int:
-    """Догружает cost_usd для записей, где стоимость не пришла в стриме."""
+    """Backfills cost_usd for records where the cost did not arrive in the stream."""
     updated = 0
     last_id = 0
     while True:
-        # Короткая сессия на чтение: транзакция не висит на время HTTP-запросов.
+        # Short read session: the transaction does not hang around during HTTP requests.
         async with factory() as db:
             cands = (
                 await db.execute(
@@ -77,7 +77,7 @@ async def backfill_costs(factory, llm, notifier) -> int:
         for row in cands:
             try:
                 cost = await llm.get_generation_cost(row.generation_id)
-            except Exception as exc:  # одна плохая запись не должна рушить пачку
+            except Exception as exc:  # one bad record must not break the whole batch
                 logger.warning("backfill_costs: lookup failed (%s)", type(exc).__name__)
                 continue
             if cost is not None:

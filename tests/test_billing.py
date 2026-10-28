@@ -115,7 +115,7 @@ async def test_thresholds_fire_once(db):
     u = await make_user(db, "5")
     n = FakeNotifier()
     await notify_thresholds(db, n, u, Decimal("3.9"), Decimal("4.1"))
-    assert n.sent == ["alice: израсходовано 80% лимита ($4.10 из $5.00)"]
+    assert n.sent == ["alice: 80% of the limit used ($4.10 of $5.00)"]
     await notify_thresholds(db, n, u, Decimal("4.1"), Decimal("4.2"))
     assert len(n.sent) == 1
 

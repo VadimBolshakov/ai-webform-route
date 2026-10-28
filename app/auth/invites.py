@@ -18,11 +18,11 @@ INVALID_MSG = "Ссылка недействительна"
 
 
 class InviteError(Exception):
-    """Ошибка регистрации; текст безопасен для показа пользователю."""
+    """Registration error; the text is safe to show to the user."""
 
 
 class InviteInvalid(InviteError):
-    """Инвайт неизвестен, использован или просрочен (отвечаем нейтральным 404)."""
+    """Invite is unknown, used or expired (we answer with a neutral 404)."""
 
 
 async def create_invite(db: AsyncSession, admin: User, settings: Settings, ip: str = "") -> str:
@@ -59,7 +59,7 @@ async def redeem_invite(
     settings: Settings,
     ip: str = "",
 ) -> User:
-    """Создаёт пользователя и гасит инвайт; commit и алерт — на вызывающем."""
+    """Creates the user and consumes the invite; commit and alert are the caller's job."""
     invite = await get_valid_invite(db, raw, lock=True)
     if invite is None:
         raise InviteInvalid(INVALID_MSG)
@@ -88,7 +88,7 @@ async def redeem_invite(
         async with db.begin_nested():
             db.add(user)
             await db.flush()
-    except IntegrityError:  # гонка за логин между двумя инвайтами
+    except IntegrityError:  # race for the username between two invites
         raise InviteError("Этот логин уже занят.") from None
     invite.used_by_id = user.id
     invite.used_at = now

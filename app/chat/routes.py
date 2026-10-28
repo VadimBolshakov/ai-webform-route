@@ -40,9 +40,9 @@ from app.security.csrf import verify_csrf
 from app.web.layout import page_context
 from app.web.request_info import client_ip
 
-# Все POST здесь требуют заголовок X-CSRF-Token: тело никогда не разбирается Starlette
-# (его парсер пишет крупные файлы во временные файлы на диск). HTMX шлёт заголовок из
-# hx-headers на <body>, chat.js — сам.
+# All POSTs here require the X-CSRF-Token header: the body is never parsed by Starlette
+# (its parser writes large files to temp files on disk). HTMX sends the header from
+# hx-headers on <body>, chat.js - on its own.
 router = APIRouter(prefix="/app")
 
 MAX_FILES = 5
@@ -179,7 +179,7 @@ async def send_message(
         for a in attachments
     ]
     db.add(Message(chat_id=chat.id, role="user", content=text, attachments=stored))
-    await db.commit()  # сообщение пользователя переживёт любой исход стрима
+    await db.commit()  # the user's message survives any stream outcome
     title_text = text.strip() or ", ".join(a.name for a in attachments)
     return await _start(
         request, db, user, chat, llm, factory,
@@ -200,7 +200,7 @@ async def retry(
     user = ctx.user
     chat = await get_owned_chat(db, user, chat_id)
     _require_csrf_header(request, ctx)
-    # Модель — из query (?model=), тело не читается.
+    # The model comes from the query (?model=); the body is not read.
     model = clean_text(request.query_params.get("model", "")).strip()[:200] or user.default_model
     error, _ = await _precheck(request, db, user, model)
     if error is not None:
@@ -219,7 +219,7 @@ async def retry(
         await db.rollback()
         return error_response(overflow)
     await db.commit()
-    # Изображения не хранятся — при повторе модель получает только «[изображение: имя]».
+    # Images are not stored - on retry the model gets only the "[изображение: имя]" marker (kept in Russian: it is sent to the model).
     return await _start(
         request, db, user, chat, llm, factory,
         model=model, history=msgs, content=content,
@@ -369,6 +369,6 @@ async def delete_chat(
 ):
     _require_csrf_header(request, ctx)
     chat = await get_owned_chat(db, ctx.user, chat_id)
-    await db.delete(chat)  # сообщения — ON DELETE CASCADE, usage.chat_id — SET NULL
+    await db.delete(chat)  # messages - ON DELETE CASCADE, usage.chat_id - SET NULL
     await db.commit()
     return await _after_action(request, db, ctx.user, deleted_id=chat_id)

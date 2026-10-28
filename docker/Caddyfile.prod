@@ -1,21 +1,21 @@
 {
-	# Почта для Let's Encrypt (уведомления о проблемах с сертификатом).
+	# Email for Let's Encrypt (certificate problem notifications).
 	email {$ACME_EMAIL}
 }
 
-# Access-логи не включаем (директивы log нет): токены /a/... и /join/... не должны попадать в логи.
+# Access logs are not enabled (no log directive): /a/... and /join/... tokens must not end up in logs.
 {$DOMAIN} {
-	# /healthz нужен только для проверки контейнера изнутри; снаружи отдаём обычный нейтральный 404
-	# приложения, чтобы не выдавать назначение сайта.
+	# /healthz is only for checking the container from inside; from outside we serve the app's ordinary neutral 404
+	# so as not to reveal the purpose of the site.
 	@health path /healthz
 	rewrite @health /__not_found
 
-	# Верхняя граница тела запроса (приложение само режет точнее: 64 КБ везде, кроме отправки сообщений).
+	# Upper bound on the request body (the app cuts more precisely itself: 64 KB everywhere except message sending).
 	request_body {
 		max_size 60MB
 	}
 
-	# Не выдаём стек: ни Server (Caddy/uvicorn), ни Via от прокси.
+	# Do not reveal the stack: no Server (Caddy/uvicorn) and no Via from the proxy.
 	header {
 		-Server
 		-Via

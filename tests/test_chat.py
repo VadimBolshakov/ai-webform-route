@@ -72,7 +72,7 @@ def events(text: str) -> list[tuple[str, dict]]:
 
 async def send(client, chat_id, csrf, text="Привет", model="openrouter/auto", files=None):
     headers = {"X-CSRF-Token": csrf} if csrf else {}
-    # Поля — частями без filename, чтобы тело всегда было multipart.
+    # Fields as parts without a filename, so that the body is always multipart.
     parts = [("text", (None, text)), ("model", (None, model)), *(files or [])]
     return await client.post(f"/app/chats/{chat_id}/messages", files=parts, headers=headers)
 
@@ -140,7 +140,7 @@ async def test_send_message_streams_and_persists(app, client, db):
     assert model == "openrouter/auto"
     assert sent[0]["role"] == "system" and sent[-1] == {"role": "user", "content": "Привет"}
     await drain_background(app)
-    assert llm.complete_calls == []  # заголовок уже задан пользователем
+    assert llm.complete_calls == []  # the title has already been set by the user
 
 
 async def test_history_sent_to_model(app, client, db):
@@ -233,7 +233,7 @@ async def test_image_with_non_vision_model_error(app, client, db):
     [(name, data)] = events(r.text)
     assert name == "error" and data["message"] == "Выбранная модель не принимает изображения"
     assert llm.calls == [] and await messages(db, chat.id) == []
-    # auto — изображения разрешены
+    # auto - images are allowed
     r = await send(client, chat.id, csrf, files=[("files", ("p.jpg", photo))])
     assert events(r.text)[-1][0] == "done"
     content = llm.calls[0][1][-1]["content"]
@@ -282,7 +282,7 @@ async def test_upload_limits(app, client, db, monkeypatch):
     assert name == "error" and data["message"] == "Сообщение длиннее 32000 символов"
     [(name, data)] = events((await send(client, chat.id, csrf, text="  ")).text)
     assert name == "error" and data["message"] == "Пустое сообщение"
-    assert "retry" not in data  # сообщение не сохранено — повторять через /retry нечего
+    assert "retry" not in data  # the message was not saved - nothing to repeat via /retry
     assert llm.calls == [] and await messages(db, chat.id) == []
 
 
@@ -341,7 +341,7 @@ async def test_stream_disconnect_saves_partial(app, client, db):
     [usage] = await usages(db)
     assert usage.status == "interrupted" and usage.generation_id == "gen-77"
     assert usage.cost_usd is None
-    assert llm.complete_calls == []  # нет заголовка для прерванного ответа
+    assert llm.complete_calls == []  # no title for an interrupted answer
 
 
 async def test_disconnect_detected_between_deltas(app, db, settings):
@@ -407,9 +407,9 @@ async def test_error_series_alert(app, client, db, notifier):
     chat = await make_chat(db, u, title="t")
     for _ in range(5):
         await send(client, chat.id, csrf)
-    assert notifier.sent == []  # успех сбросил серию
+    assert notifier.sent == []  # success reset the series
     await send(client, chat.id, csrf)
-    assert notifier.sent == ["Серия ошибок OpenRouter: 3 ошибки подряд за 10 минут"]
+    assert notifier.sent == ["OpenRouter error series: 3 errors in a row within 10 minutes"]
 
 
 async def test_title_generated_after_first_reply(app, client, db, settings):
@@ -430,7 +430,7 @@ async def test_title_generated_after_first_reply(app, client, db, settings):
     assert rows[1].cost_usd == Decimal("0.0001") and rows[1].chat_id == chat.id
     await send(client, chat.id, csrf, text="ещё")
     await drain_background(app)
-    assert len(llm.complete_calls) == 1  # только после первого ответа
+    assert len(llm.complete_calls) == 1  # only after the first answer
 
 
 async def test_title_error_keeps_default(app, client, db):
@@ -498,7 +498,7 @@ async def test_csrf_required(app, client, db):
     assert (await send(client, chat.id, "wrong")).status_code == 403
     assert (await client.post(f"/app/chats/{chat.id}/retry")).status_code == 403
     assert llm.calls == [] and await messages(db, chat.id) == []
-    # токен только в заголовке: поле формы не принимается (тело не разбирается Starlette)
+    # the token only in the header: a form field is not accepted (the body is not parsed by Starlette)
     r = await client.post(
         f"/app/chats/{chat.id}/messages",
         files=[("text", (None, "hi")), ("csrf_token", (None, csrf)), ("files", ("a.txt", b"a"))],
@@ -543,7 +543,7 @@ async def test_control_chars_stripped(app, client, db):
     llm = use_llm(app)
     u, csrf = await signed_in(client, db)
     chat = await make_chat(db, u, title="t")
-    # httpx экранирует управляющие символы в filename — тело собираем вручную.
+    # httpx escapes control characters in filename - we build the body by hand.
     body = (
         '--BND\r\nContent-Disposition: form-data; name="text"\r\n\r\n'
         "При\x00вет\x1b\n\tок\r\n"
@@ -566,7 +566,7 @@ async def test_empty_file_input_ignored(app, client, db):
     llm = use_llm(app)
     u, csrf = await signed_in(client, db)
     chat = await make_chat(db, u, title="t")
-    # браузер шлёт пустое поле файла как filename="" без данных (httpx так не умеет)
+    # the browser sends an empty file field as filename="" with no data (httpx cannot do that)
     body = (
         '--BND\r\nContent-Disposition: form-data; name="text"\r\n\r\nтолько текст\r\n'
         '--BND\r\nContent-Disposition: form-data; name="files"; filename=""\r\n'
@@ -687,7 +687,7 @@ async def test_oversized_context_rejected_before_model(app, client, db):
     llm = use_llm(app)
     u, csrf = await signed_in(client, db)
     chat = await make_chat(db, u, title="t")
-    files = [("files", (f"f{i}.txt", b"a" * 30_000)) for i in range(3)]  # ≈30 тыс. токенов
+    files = [("files", (f"f{i}.txt", b"a" * 30_000)) for i in range(3)]  # ~30k tokens
     r = await send(client, chat.id, csrf, text="вопрос", files=files)
     [(name, data)] = events(r.text)
     assert name == "error" and data == {
@@ -711,4 +711,4 @@ async def test_oversized_context_rejected_on_retry(app, client, db, monkeypatch)
     [(name, data)] = events(r.text)
     assert name == "error" and "лимите 5 тыс." in data["message"] and "retry" not in data
     assert llm.calls == []
-    assert [m.role for m in await messages(db, cid)] == ["user", "assistant"]  # ответ не удалён
+    assert [m.role for m in await messages(db, cid)] == ["user", "assistant"]  # the answer was not deleted

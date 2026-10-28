@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-import app.models  # noqa: F401  (регистрирует модели в Base.metadata)
+import app.models  # noqa: F401  (registers the models in Base.metadata)
 from app.config import Settings
 from app.db import Base, get_db, get_session_factory
 from app.main import create_app
@@ -42,7 +42,7 @@ async def engine(settings):
     db_name = make_url(settings.database_url).database or ""
     if not db_name.endswith("_test"):
         raise RuntimeError(
-            f"Отказ: тесты делают drop_all, а база {db_name!r} не оканчивается на '_test'"
+            f"Refusing: the tests run drop_all, and the database {db_name!r} does not end with '_test'"
         )
     eng = create_async_engine(settings.database_url)
     async with eng.begin() as conn:
@@ -54,7 +54,7 @@ async def engine(settings):
 
 @pytest_asyncio.fixture
 async def db(engine):
-    """Сессия внутри внешней транзакции; commit() в тесте — savepoint, в конце откат."""
+    """Session inside an outer transaction; commit() in a test is a savepoint, rolled back at the end."""
     async with engine.connect() as conn:
         trans = await conn.begin()
         session = AsyncSession(
@@ -76,8 +76,8 @@ def app(settings, db):
 
     @asynccontextmanager
     async def _shared_session():
-        # Пост-стримовая запись идёт через фабрику сессий; в тестах — та же сессия,
-        # чтобы откат внешней транзакции изолировал и её.
+        # The post-stream write goes through the session factory; in tests it is the same session,
+        # so that rolling back the outer transaction isolates it too.
         yield db
 
     application.dependency_overrides[get_db] = _get_db

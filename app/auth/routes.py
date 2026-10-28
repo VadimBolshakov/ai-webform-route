@@ -68,10 +68,10 @@ async def login_submit(
     _check_token(request, token)
     ip = client_ip(request)
     if len(username) > MAX_FIELD or len(password) > MAX_FIELD:
-        username, password = "", ""  # заведомо неверно; не логируем и не хешируем огромный ввод
+        username, password = "", ""  # deliberately invalid; we neither log nor hash huge input
     limiter = request.app.state.login_limiter
     if not limiter.hit(ip):
-        if limiter.first_denial(ip):  # одна запись на IP за окно, не на каждую попытку
+        if limiter.first_denial(ip):  # one record per IP per window, not per attempt
             await audit(db, "limit_reached", None, ip, scope="login")
             await db.commit()
         return _form(request, token, GENERIC_ERROR, 429)
@@ -81,14 +81,14 @@ async def login_submit(
         uname = username.strip().lower()[:64]
         known = (await db.execute(select(User).where(User.username == uname))).scalar_one_or_none()
         if known is not None:
-            # Существующий аккаунт: привязка по user_id, имя в details не пишем.
+            # Existing account: bound by user_id, the name is not written to details.
             await audit(db, "login_fail", known, ip)
         else:
             await audit(db, "login_fail", None, ip, username=uname)
         await db.commit()
         return _form(request, token, GENERIC_ERROR, 401)
 
-    # Старая cookie игнорируется (фиксация сессии невозможна); валидную старую отзываем.
+    # The old cookie is ignored (session fixation is impossible); a valid old one is revoked.
     old = await get_session(db, request.cookies.get(COOKIE_NAME))
     if old is not None:
         await revoke(db, old)
@@ -122,8 +122,8 @@ def _drop_session_redirect(token: str):
     return resp
 
 
-# Без действующей промежуточной сессии (истекли 10 минут, отозвана) — назад ко входу,
-# а не голый 404: токен входа верный, скрывать нечего.
+# Without a valid intermediate session (10 minutes expired, revoked) - back to login,
+# not a bare 404: the login token is correct, nothing to hide.
 @router.get("/a/{token}/totp")
 async def totp_form(
     request: Request, token: str, ctx: AuthContext | None = Depends(optional_auth)
@@ -169,7 +169,7 @@ async def totp_submit(
     if len(code) <= MAX_CODE and await consume_totp(db, user, code, request.app.state.settings.fernet_key):
         user.failed_logins = 0
         user.locked_until = None
-        # Ротация ID сессии: после повышения привилегий старый идентификатор бесполезен.
+        # Session ID rotation: after privilege elevation the old identifier is useless.
         await revoke(db, ctx.session)
         raw, _ = await create_session(db, user, ip, request.headers.get("user-agent", ""))
         await audit(db, "login_ok", user, ip)
@@ -265,7 +265,7 @@ async def join_submit(
     await audit(db, "login_ok", user, ip)
     await db.commit()
     try:
-        await notifier.alert(f"Новый пользователь: {user.username}")
+        await notifier.alert(f"New user: {user.username}")
     except Exception:
         logger.exception("notifier.alert failed")
 

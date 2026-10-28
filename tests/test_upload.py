@@ -79,7 +79,7 @@ async def test_total_body_cap_by_content_length():
     req = multipart([("files", (f"f{i}.txt", b"a" * 900 * KB)) for i in range(5)])
     with pytest.raises(BodyTooLarge):
         await parse(req, max_file_bytes=100 * KB)
-    assert req.consumed == 0  # отказ до чтения тела
+    assert req.consumed == 0  # refusal before reading the body
 
 
 async def test_total_body_cap_streamed_without_length():
@@ -108,7 +108,7 @@ async def test_excess_files_dropped_without_buffering(monkeypatch):
     assert len(form.files) == 5
     assert form.error == "Не больше 5 файлов в сообщении"
     dropped = [n for d, n in seen if d]
-    assert dropped and all(n == 0 for n in dropped)  # лишние части не буферизуются
+    assert dropped and all(n == 0 for n in dropped)  # extra parts are not buffered
 
 
 def _file_part(filename: bytes, data: bytes) -> bytes:
@@ -119,7 +119,7 @@ def _file_part(filename: bytes, data: bytes) -> bytes:
 
 
 async def test_empty_file_input_skipped():
-    # httpx не умеет filename="" — тело вручную, как у браузера
+    # httpx cannot do filename="" - build the body by hand, like a browser
     body = b'--BND\r\nContent-Disposition: form-data; name="text"\r\n\r\nx\r\n'
     body += _file_part(b"", b"") + b"--BND--\r\n"
     form = await parse(raw_multipart(body))

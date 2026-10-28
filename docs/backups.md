@@ -272,7 +272,7 @@ aws iam create-access-key --user-name aichat-backup-server
    sudo ops/backup/install.sh
    ```
 
-   В конце — таблица из двух таймеров (`aichat-backup.timer`, `aichat-restore-test.timer`) и «Готово».
+   В конце — таблица из двух таймеров (`aichat-backup.timer`, `aichat-restore-test.timer`) и «Done: backup timers enabled.»
    Повторный запуск безопасен: существующий пароль и репозиторий не трогаются.
 
 4. **Сохраните пароль репозитория** в менеджер паролей — без него бэкапы бесполезны:
@@ -487,7 +487,7 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
 
 ## 7. Откат бакета после атаки
 
-Если сервер взломан или снапшоты пропали (restore-test пишет «нет снапшотов», `restic snapshots` пуст),
+Если сервер взломан или снапшоты пропали (restore-test пишет «No aichat-db snapshots in the repository», `restic snapshots` пуст),
 злоумышленник мог удалить объекты в бакете ключом сервера. Удалённое в версионированном бакете
 хранится ещё **30 дней** — в это окно бакет можно вернуть на момент до атаки. Всё делается с вашего компьютера.
 
@@ -517,7 +517,7 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
    .venv\Scripts\python ops\backup\aws\undelete.py --bucket $bucket --as-of $asOf
    ```
 
-   Печатается таблица `восстановить` / `удалить` / `без изменений` по ключам папки `aichat/` и итог.
+   Печатается таблица `restore` / `delete` / `unchanged` по ключам папки `aichat/` и итог.
    Время старше 30 дней скрипт не принимает (старые версии уже удалены lifecycle); `--force-old` снимает
    запрет, но восстановится не всё.
 
@@ -529,7 +529,7 @@ sudo ops/backup/restic.sh snapshots --tag aichat-db
    ```
 
    Во время `--apply` печатается каждый обработанный ключ. Повторный план должен показать
-   `восстановить 0, удалить 0`. Если откат прервался ошибкой — просто запустите `--apply` ещё раз.
+   `restore 0, delete 0`. Если откат прервался ошибкой — просто запустите `--apply` ещё раз.
 
 5. **Проверка репозитория** (спросит пароль репозитория — вставьте его из менеджера паролей):
 

@@ -1,12 +1,12 @@
 {
-	# Локально наружу проброшен только 8443; редиректа с :80 нет.
+	# Locally only 8443 is published; there is no redirect from :80.
 	auto_https disable_redirects
 }
 
-# Access-логи не включаем (директивы log нет): токены /join/... и /a/... не должны попадать в логи.
+# Access logs are not enabled (no log directive): /join/... and /a/... tokens must not end up in logs.
 localhost {
 	tls internal
-	# Не выдаём стек: ни Server (Caddy/uvicorn), ни Via от прокси.
+	# Do not reveal the stack: no Server (Caddy/uvicorn) and no Via from the proxy.
 	header {
 		-Server
 		-Via

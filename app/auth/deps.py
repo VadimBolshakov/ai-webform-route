@@ -42,7 +42,7 @@ async def current_auth(request: Request, db: AsyncSession = Depends(get_db)) -> 
 async def optional_auth(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> AuthContext | None:
-    """Как current_auth, но вместо нейтрального 404 (нет/просрочена сессия) — None."""
+    """Like current_auth, but returns None instead of a neutral 404 (no/expired session)."""
     try:
         return await current_auth(request, db)
     except HTTPException as exc:

@@ -108,7 +108,7 @@ async def test_change_password_validation_and_lockout(client, db, notifier):
     await db.refresh(u)
     assert u.locked_until is not None
     assert (await db.scalar(select(func.count()).select_from(AuthSession))) == 0
-    assert any("неудачных" in m for m in notifier.sent)
+    assert any("failed logins" in m for m in notifier.sent)
 
 
 async def test_password_refused_while_locked(client, db):
@@ -131,7 +131,7 @@ async def test_sessions_list_and_revoke_other_session(client, db):
     r = await client.get(S + "/sessions")
     assert "2.2.2.2" in r.text and "это устройство" in r.text
     assert "<b>Agent" not in r.text and "&lt;b&gt;Agent" in r.text
-    assert "x" * 108 in r.text and "x" * 109 not in r.text  # усечение до 120 символов
+    assert "x" * 108 in r.text and "x" * 109 not in r.text  # truncation to 120 characters
     assert "3.3.3.3" not in r.text
     assert (await post(client, f"/sessions/{theirs.id}/revoke", csrf)).status_code == 404
     assert (await db.get(AuthSession, theirs.id)) is not None
@@ -226,7 +226,7 @@ async def test_delete_account_anonymizes_usage(client, db, notifier):
     labels = (await db.execute(select(AuditLog.event, AuditLog.user_label))).all()
     assert ("account_deleted", label) in labels
     assert all("alice" != lab for _, lab in labels)
-    assert notifier.sent[-1] == f"Аккаунт удалён: {label}"
+    assert notifier.sent[-1] == f"Account deleted: {label}"
     assert (await client.get(S)).status_code == 404
 
 
@@ -283,9 +283,9 @@ async def test_delete_removes_username_from_audit(client, db):
 
     u, csrf = await signed_in(client, db)
     uid = u.id
-    # неудачный вход (известное имя) и вход с неизвестным именем
+    # failed login (known name) and login with an unknown name
     await client.post(LOGIN, data={"username": "alice", "password": "wrong-wrong-wrong"})
-    # устаревшая строка: без user_id, но с именем
+    # legacy row: no user_id but with a name
     db.add(AuditLog(event="login_fail", user_id=None, user_label="alice", details={"username": "alice"}))
     await db.commit()
     unknown = (await db.execute(select(AuditLog).where(AuditLog.event == "login_fail"))).scalars().all()
@@ -317,7 +317,7 @@ async def test_delete_blanks_ip_on_audit_rows(client, db):
     by_label: dict[str, set[str]] = {}
     for label, ip in rows:
         by_label.setdefault(label, set()).add(ip)
-    assert by_label[f"deleted-user-{u.id}"] == {""}  # включая саму запись account_deleted
+    assert by_label[f"deleted-user-{u.id}"] == {""}  # including the account_deleted record itself
     assert by_label["bob"] == {"7.7.7.7"} and by_label["carol"] == {"8.8.8.8"}
 
 
@@ -343,4 +343,4 @@ async def test_export_includes_sessions_and_own_audit(client, db):
     assert {"event": "password_changed", "ip": "4.4.4.4"} in [
         {"event": a["event"], "ip": a["ip"]} for a in audit
     ]
-    assert "login_ok" in {a["event"] for a in audit}  # собственный вход при signed_in
+    assert "login_ok" in {a["event"] for a in audit}  # own login in signed_in

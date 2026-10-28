@@ -12,7 +12,7 @@ def verify_csrf(supplied, session) -> None:
 
 
 async def require_csrf(request: Request, session) -> None:
-    """Сверяет X-CSRF-Token или поле формы csrf_token с токеном сессии."""
+    """Compares X-CSRF-Token or the csrf_token form field with the session token."""
     supplied = request.headers.get("x-csrf-token")
     if not supplied:
         try:

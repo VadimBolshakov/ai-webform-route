@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Тесты скриптов бэкапа. Запускаются внутри runner (ops/backup/test/compose.yml):
-#   bash /work/ops/backup/test/run.sh            — все функции test_*
-#   bash /work/ops/backup/test/run.sh test_a ... — только перечисленные
-# Перед каждым тестом: пустой бакет (все версии), нет пароль-файла, пустые state и журнал hc.
-# Печатает PASS/FAIL по каждому тесту; код 1 при любом FAIL.
-# SC2016: run_lib принимает bash-код в одинарных кавычках намеренно (раскрывается в дочернем bash).
+# Tests of the backup scripts. They run inside the runner (ops/backup/test/compose.yml):
+#   bash /work/ops/backup/test/run.sh            - all test_* functions
+#   bash /work/ops/backup/test/run.sh test_a ... - only the listed ones
+# Before each test: an empty bucket (all versions), no password file, empty state and hc log.
+# Prints PASS/FAIL for each test; exit code 1 on any FAIL.
+# SC2016: run_lib deliberately takes bash code in single quotes (expanded in the child bash).
 # shellcheck disable=SC2016
 set -euo pipefail
 
@@ -13,29 +13,29 @@ TEST_DIR=$BACKUP_DIR/test
 HC_URL=http://hc:8080
 HC_LOG=/tmp/hc/requests.jsonl
 BUCKET=aichat-test
-OUT=/tmp/test-out   # вывод тестируемой команды (см. run_script / run_lib)
+OUT=/tmp/test-out   # output of the command under test (see run_script / run_lib)
 
-# mc ходит в MinIO с ключами из тестового env-файла.
+# mc talks to MinIO with the keys from the test env file.
 # shellcheck source=/dev/null
 MC_HOST_t=$(set -a; . "$AICHAT_BACKUP_ENV"; printf 'http://%s:%s@minio:9000' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY")
 export MC_HOST_t
 
-# --- помощники -------------------------------------------------------------
+# --- helpers -------------------------------------------------------------
 
 fail() { echo "  assert: $*" >&2; return 1; }
 
 reset_env() {
     mc rm --recursive --versions --force "t/$BUCKET" >/dev/null 2>&1 || true
-    [[ -z "$(mc ls --versions --recursive "t/$BUCKET")" ]] || fail "бакет не очищен"
+    [[ -z "$(mc ls --versions --recursive "t/$BUCKET")" ]] || fail "bucket not emptied"
     rm -f "$RESTIC_PASSWORD_FILE" "$RESTIC_PASSWORD_FILE.tmp"
     rm -rf "$AICHAT_STATE_DIR" "${HOME:-/root}/.cache/restic" "$OUT"
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
 }
 
-# Пароль репозитория с известным значением (для тестов, которым не важно, кто его создал).
+# Repository password with a known value (for tests that do not care who created it).
 use_test_password() { install -m 600 "$TEST_DIR/test-password" "$RESTIC_PASSWORD_FILE"; }
 
-# run_script <script> [args] — запускает ops/backup/<script>; stdout+stderr → $OUT; возвращает код.
+# run_script <script> [args] - runs ops/backup/<script>; stdout+stderr -> $OUT; returns the exit code.
 run_script() {
     local script=$1 rc=0
     shift
@@ -43,20 +43,20 @@ run_script() {
     return "$rc"
 }
 
-# run_lib '<код>' — выполняет код в отдельном bash с подключённым lib.sh; stdout+stderr → $OUT.
+# run_lib '<code>' - runs the code in a separate bash with lib.sh sourced; stdout+stderr -> $OUT.
 run_lib() {
     local rc=0
     timeout 300 bash -c ". '$BACKUP_DIR/lib.sh'; $1" >"$OUT" 2>&1 || rc=$?
     return "$rc"
 }
 
-# rc_of <команда...> — печатает код возврата команды (не прерывая тест).
+# rc_of <command...> - prints the command's exit code (without aborting the test).
 rc_of() { local rc=0; "$@" || rc=$?; echo "$rc"; }
 
 hc_paths() { jq -r .path "$HC_LOG"; }
 
-# assert_no_secrets <file> — в файле нет ни настоящего, ни подставленного в тестах неверного ключа AWS,
-# ни пароля репозитория (если файл пароля есть), ни URL пингов бэкапа и restore-test.
+# assert_no_secrets <file> - the file contains neither the real AWS key nor the wrong one substituted in tests,
+# nor the repository password (if the password file exists), nor the backup and restore-test ping URLs.
 assert_no_secrets() {
     local file=$1 secret hc_url restore_ping pw=""
     # shellcheck source=/dev/null
@@ -66,14 +66,14 @@ assert_no_secrets() {
     # shellcheck source=/dev/null
     restore_ping=$(set -a; . "$AICHAT_BACKUP_ENV"; printf '%s' "$HC_RESTORE_URL")
     [[ -s "$RESTIC_PASSWORD_FILE" ]] && pw=$(cat "$RESTIC_PASSWORD_FILE")
-    ! grep -qF "$secret" "$file" || fail "в выводе ключ AWS"
-    ! grep -qF wrong-secret "$file" || fail "в выводе неверный ключ AWS"
-    ! grep -qF "$hc_url" "$file" || fail "в выводе URL пинга"
-    ! grep -qF "$restore_ping" "$file" || fail "в выводе URL пинга restore-test"
-    [[ -z "$pw" ]] || ! grep -qF "$pw" "$file" || fail "в выводе пароль репозитория"
+    ! grep -qF "$secret" "$file" || fail "AWS key in the output"
+    ! grep -qF wrong-secret "$file" || fail "wrong AWS key in the output"
+    ! grep -qF "$hc_url" "$file" || fail "ping URL in the output"
+    ! grep -qF "$restore_ping" "$file" || fail "restore-test ping URL in the output"
+    [[ -z "$pw" ]] || ! grep -qF "$pw" "$file" || fail "repository password in the output"
 }
 
-# restic_t <аргументы> — restic с тестовым env-файлом (без lib.sh).
+# restic_t <args> - restic with the test env file (without lib.sh).
 restic_t() (
     set -a
     # shellcheck source=/dev/null
@@ -82,13 +82,13 @@ restic_t() (
     exec restic "$@"
 )
 
-# Репозиторий с тестовым паролем (как после init-repo.sh).
+# Repository with the test password (as after init-repo.sh).
 init_test_repo() {
     use_test_password
     restic_t init >/dev/null 2>&1 || fail "restic init"
 }
 
-# /tmp/leaky-restic — restic, печатающий секреты в stderr при каждом вызове и падающий на forget.
+# /tmp/leaky-restic - restic that prints secrets to stderr on every call and fails on forget.
 make_leaky_restic() {
     cat >/tmp/leaky-restic <<'EOF'
 #!/bin/sh
@@ -102,12 +102,12 @@ EOF
     chmod +x /tmp/leaky-restic
 }
 
-# assert_no_key_id <file> — в файле нет ID ключа AWS.
+# assert_no_key_id <file> - the file has no AWS key ID.
 assert_no_key_id() {
     local key_id
     # shellcheck source=/dev/null
     key_id=$(set -a; . "$AICHAT_BACKUP_ENV"; printf '%s' "$AWS_ACCESS_KEY_ID")
-    ! grep -qF "$key_id" "$1" || fail "в выводе ID ключа AWS"
+    ! grep -qF "$key_id" "$1" || fail "AWS key ID in the output"
 }
 
 snapshots_json() { restic_t snapshots --tag aichat-db --json; }
@@ -115,31 +115,31 @@ snapshot_count() { snapshots_json | jq length; }
 STATUS=$AICHAT_STATE_DIR/status.json
 RESTORE_STATUS=$AICHAT_STATE_DIR/restore-test.json
 
-# db_exists <имя> — 0, если БД есть на сервере.
+# db_exists <name> - 0 if the DB exists on the server.
 db_exists() { [[ -n "$(psql -h db -U aichat -d aichat -tAc "SELECT 1 FROM pg_database WHERE datname='$1'")" ]]; }
-# Время бэкапа в тестах restore-test (эпоха, UTC).
+# Backup time in the restore-test tests (epoch, UTC).
 RT_BASE=$(date -u -d '2026-01-01 03:30:00' +%s)
 
-# --- тесты: init-repo.sh и lib.sh ------------------------------------------
+# --- tests: init-repo.sh and lib.sh ------------------------------------------
 
 test_init_creates_repo() {
-    run_script init-repo.sh || { cat "$OUT"; fail "init-repo.sh вернул ошибку"; }
-    [[ -s "$RESTIC_PASSWORD_FILE" ]] || fail "пароль-файл не создан"
-    [[ "$(stat -c %a "$RESTIC_PASSWORD_FILE")" == 600 ]] || fail "права пароль-файла не 600"
-    grep -q "Сохраните пароль в менеджере паролей: cat $RESTIC_PASSWORD_FILE" "$OUT" \
-        || fail "нет инструкции сохранить пароль"
-    ! grep -qF "$(cat "$RESTIC_PASSWORD_FILE")" "$OUT" || fail "пароль напечатан"
-    [[ "$(rc_of run_lib 'load_env; repo_exists')" == 0 ]] || fail "repo_exists после init != 0"
+    run_script init-repo.sh || { cat "$OUT"; fail "init-repo.sh returned an error"; }
+    [[ -s "$RESTIC_PASSWORD_FILE" ]] || fail "password file not created"
+    [[ "$(stat -c %a "$RESTIC_PASSWORD_FILE")" == 600 ]] || fail "password file mode is not 600"
+    grep -q "Save the password in a password manager: cat $RESTIC_PASSWORD_FILE" "$OUT" \
+        || fail "no instruction to save the password"
+    ! grep -qF "$(cat "$RESTIC_PASSWORD_FILE")" "$OUT" || fail "password printed"
+    [[ "$(rc_of run_lib 'load_env; repo_exists')" == 0 ]] || fail "repo_exists after init != 0"
 }
 
 test_init_twice_is_noop() {
-    run_script init-repo.sh || { cat "$OUT"; fail "первый init упал"; }
+    run_script init-repo.sh || { cat "$OUT"; fail "first init failed"; }
     local pw
     pw=$(cat "$RESTIC_PASSWORD_FILE")
-    run_script init-repo.sh || { cat "$OUT"; fail "второй init вернул ошибку"; }
-    grep -q "Репозиторий уже существует" "$OUT" || { cat "$OUT"; fail "нет сообщения «уже существует»"; }
-    ! grep -q "Сохраните пароль" "$OUT" || fail "пароль сгенерирован повторно"
-    [[ "$(cat "$RESTIC_PASSWORD_FILE")" == "$pw" ]] || fail "пароль-файл изменился"
+    run_script init-repo.sh || { cat "$OUT"; fail "second init returned an error"; }
+    grep -q "Repository already exists" "$OUT" || { cat "$OUT"; fail "no 'already exists' message"; }
+    ! grep -q "Save the password" "$OUT" || fail "password generated again"
+    [[ "$(cat "$RESTIC_PASSWORD_FILE")" == "$pw" ]] || fail "password file changed"
 }
 
 test_init_fails_on_access_error() {
@@ -147,46 +147,46 @@ test_init_fails_on_access_error() {
     local env=/tmp/bad-key.env
     sed 's/^AWS_SECRET_ACCESS_KEY=.*/AWS_SECRET_ACCESS_KEY=wrong-secret/' "$AICHAT_BACKUP_ENV" >"$env"
     [[ "$(rc_of env AICHAT_BACKUP_ENV="$env" bash -c "bash '$BACKUP_DIR/init-repo.sh' >'$OUT' 2>&1")" == 1 ]] \
-        || { cat "$OUT"; fail "init с неверным ключом не упал"; }
-    grep -q "Нет доступа к репозиторию" "$OUT" || { cat "$OUT"; fail "нет текста об ошибке доступа"; }
-    [[ -z "$(mc ls --recursive "t/$BUCKET")" ]] || fail "init что-то записал в бакет"
+        || { cat "$OUT"; fail "init with a wrong key did not fail"; }
+    grep -q "Cannot access the repository" "$OUT" || { cat "$OUT"; fail "no access error text"; }
+    [[ -z "$(mc ls --recursive "t/$BUCKET")" ]] || fail "init wrote something to the bucket"
     assert_no_secrets "$OUT"
 }
 
 test_init_bad_env_leaves_no_password() {
     local rc
     rc=$(rc_of env AICHAT_BACKUP_ENV=/nonexistent bash -c "bash '$BACKUP_DIR/init-repo.sh' >'$OUT' 2>&1")
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "init без env-файла: код $rc"; }
-    grep -q "Нет /nonexistent" "$OUT" || { cat "$OUT"; fail "нет текста об отсутствии env-файла"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "init without env file: code $rc"; }
+    grep -q "Missing /nonexistent" "$OUT" || { cat "$OUT"; fail "no missing env file text"; }
 
     local env=/tmp/no-repo.env
     grep -v '^RESTIC_REPOSITORY=' "$AICHAT_BACKUP_ENV" >"$env"
     rc=$(rc_of env AICHAT_BACKUP_ENV="$env" bash -c "bash '$BACKUP_DIR/init-repo.sh' >>'$OUT' 2>&1")
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "init без RESTIC_REPOSITORY: код $rc"; }
-    grep -q "не задан RESTIC_REPOSITORY" "$OUT" || { cat "$OUT"; fail "нет текста о RESTIC_REPOSITORY"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "init without RESTIC_REPOSITORY: code $rc"; }
+    grep -q "RESTIC_REPOSITORY is not set" "$OUT" || { cat "$OUT"; fail "no RESTIC_REPOSITORY text"; }
 
-    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "остался файл пароля"
-    ! grep -q "Сохраните пароль" "$OUT" || fail "просьба сохранить несуществующий пароль"
+    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "password file left behind"
+    ! grep -q "Save the password" "$OUT" || fail "request to save a nonexistent password"
 }
 
-# Переустановка: репозиторий в бакете есть, а файла пароля нет — новый (неверный) пароль не остаётся.
+# Reinstall: the repository is in the bucket but there is no password file - the new (wrong) password does not stay.
 test_init_existing_repo_without_password() {
     init_test_repo
     rm -f "$RESTIC_PASSWORD_FILE"
     local rc
     rc=$(rc_of run_script init-repo.sh)
-    [[ "$rc" != 0 ]] || { cat "$OUT"; fail "init без пароля при существующем репозитории не упал"; }
-    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "остался новый файл пароля"
-    ! grep -q "Сохраните" "$OUT" || { cat "$OUT"; fail "просьба сохранить неверный пароль"; }
-    grep -q "Похоже, репозиторий уже существует (или нет доступа). Если это переустановка — положите прежний пароль из менеджера паролей в /etc/aichat/restic-password (docs/backups.md, раздел 6.2) и запустите снова." "$OUT" \
-        || { cat "$OUT"; fail "нет подсказки про прежний пароль"; }
-    # С прежним паролем — «уже существует».
+    [[ "$rc" != 0 ]] || { cat "$OUT"; fail "init without a password and with an existing repository did not fail"; }
+    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "new password file left behind"
+    ! grep -q "Save the password" "$OUT" || { cat "$OUT"; fail "request to save a wrong password"; }
+    grep -q "The repository seems to exist already (or access is denied). If this is a reinstall, put the previous password from your password manager into /etc/aichat/restic-password (docs/backups.md, section 6.2) and run again." "$OUT" \
+        || { cat "$OUT"; fail "no hint about the previous password"; }
+    # With the previous password - "already exists".
     use_test_password
-    run_script init-repo.sh || { cat "$OUT"; fail "init с прежним паролем упал"; }
-    grep -q "Репозиторий уже существует" "$OUT" || { cat "$OUT"; fail "нет сообщения «уже существует»"; }
+    run_script init-repo.sh || { cat "$OUT"; fail "init with the previous password failed"; }
+    grep -q "Repository already exists" "$OUT" || { cat "$OUT"; fail "no 'already exists' message"; }
 }
 
-# Новый пароль, но restic init упал — пароль удаляется, просьбы его сохранить нет.
+# A new password but restic init failed - the password is removed, there is no request to save it.
 test_init_failure_removes_new_password() {
     cat >/tmp/noinit-restic <<'EOF'
 #!/bin/sh
@@ -196,136 +196,136 @@ EOF
     chmod +x /tmp/noinit-restic
     local rc
     rc=$(RESTIC_CMD=/tmp/noinit-restic rc_of run_script init-repo.sh)
-    [[ "$rc" != 0 ]] || { cat "$OUT"; fail "упавший restic init не дал ошибку"; }
-    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "остался новый файл пароля"
-    ! grep -q "Сохраните" "$OUT" || { cat "$OUT"; fail "просьба сохранить пароль без репозитория"; }
+    [[ "$rc" != 0 ]] || { cat "$OUT"; fail "failed restic init gave no error"; }
+    [[ ! -e "$RESTIC_PASSWORD_FILE" && ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail "new password file left behind"
+    ! grep -q "Save the password" "$OUT" || { cat "$OUT"; fail "request to save a password without a repository"; }
 }
 
 test_init_ignores_stale_tmp() {
     printf 'stale\n' >"$RESTIC_PASSWORD_FILE.tmp"
-    run_script init-repo.sh || { cat "$OUT"; fail "init-repo.sh со старым .tmp упал"; }
-    [[ "$(cat "$RESTIC_PASSWORD_FILE")" != stale ]] || fail "использовано содержимое старого .tmp"
-    [[ ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail ".tmp не удалён"
-    [[ "$(stat -c %a "$RESTIC_PASSWORD_FILE")" == 600 ]] || fail "права пароль-файла не 600"
+    run_script init-repo.sh || { cat "$OUT"; fail "init-repo.sh with a stale .tmp failed"; }
+    [[ "$(cat "$RESTIC_PASSWORD_FILE")" != stale ]] || fail "content of the stale .tmp was used"
+    [[ ! -e "$RESTIC_PASSWORD_FILE.tmp" ]] || fail ".tmp not removed"
+    [[ "$(stat -c %a "$RESTIC_PASSWORD_FILE")" == 600 ]] || fail "password file mode is not 600"
 }
 
 test_repo_exists_distinguishes_network_error() {
     use_test_password
     local rc
     rc=$(rc_of run_lib 'load_env; repo_exists')
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "пустой бакет: ожидался код 1, получен $rc"; }
-    [[ ! -s "$OUT" ]] || { cat "$OUT"; fail "repo_exists напечатал вывод restic"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "empty bucket: expected code 1, got $rc"; }
+    [[ ! -s "$OUT" ]] || { cat "$OUT"; fail "repo_exists printed restic output"; }
 
     rc=$(rc_of run_lib 'load_env; RESTIC_REPOSITORY=s3:http://no-such-host.invalid:9000/aichat-test/aichat repo_exists')
-    [[ "$rc" == 2 ]] || { cat "$OUT"; fail "несуществующий хост: ожидался код 2, получен $rc"; }
-    [[ ! -s "$OUT" ]] || { cat "$OUT"; fail "repo_exists напечатал вывод restic"; }
+    [[ "$rc" == 2 ]] || { cat "$OUT"; fail "nonexistent host: expected code 2, got $rc"; }
+    [[ ! -s "$OUT" ]] || { cat "$OUT"; fail "repo_exists printed restic output"; }
 
     run_lib 'load_env; AWS_SECRET_ACCESS_KEY=wrong-secret repo_exists || echo "rc=$? $REPO_EXISTS_ERROR"' || true
-    grep -q '^rc=2 restic не ответил за 15 с (сеть или S3 недоступны?): Stat: The request signature' "$OUT" \
-        || { cat "$OUT"; fail "неверный ключ: ожидался код 2 и текст ошибки S3"; }
+    grep -q '^rc=2 restic did not answer within 15 s (network or S3 unavailable?): Stat: The request signature' "$OUT" \
+        || { cat "$OUT"; fail "wrong key: expected code 2 and the S3 error text"; }
     assert_no_secrets "$OUT"
 }
 
 test_repo_exists_classification() {
     use_test_password
-    # «Is there a repository…» без кода 10 и без «repository does not exist» — не «репозитория нет».
+    # "Is there a repository..." without code 10 and without "repository does not exist" - not "no repository".
     local rc
     rc=$(rc_of run_lib "load_env; RESTIC_CMD=\"sh -c 'echo \\\"Is there a repository at the following location?\\\" >&2; exit 1' x\" repo_exists")
-    [[ "$rc" == 2 ]] || { cat "$OUT"; fail "«Is there a repository» без кода 10: ожидался 2, получен $rc"; }
+    [[ "$rc" == 2 ]] || { cat "$OUT"; fail "'Is there a repository' without code 10: expected 2, got $rc"; }
     rc=$(rc_of run_lib "load_env; RESTIC_CMD=\"sh -c 'echo \\\"Fatal: repository does not exist: x\\\" >&2; exit 1' x\" repo_exists")
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "«repository does not exist»: ожидался 1, получен $rc"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "'repository does not exist': expected 1, got $rc"; }
     rc=$(rc_of run_lib "load_env; RESTIC_CMD=\"sh -c 'exit 10' x\" repo_exists")
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код 10: ожидался 1, получен $rc"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code 10: expected 1, got $rc"; }
 
-    # Таймаут проверяется до подстановки в eval.
+    # The timeout is validated before substitution into eval.
     rc=$(rc_of run_lib "load_env; AICHAT_REPO_CHECK_TIMEOUT='1; touch /tmp/pwned;' repo_exists")
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "нечисловой таймаут принят"; }
-    grep -q "AICHAT_REPO_CHECK_TIMEOUT должен быть целым числом" "$OUT" || { cat "$OUT"; fail "нет текста о таймауте"; }
-    [[ ! -e /tmp/pwned ]] || fail "таймаут выполнен как код"
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "non-numeric timeout accepted"; }
+    grep -q "AICHAT_REPO_CHECK_TIMEOUT must be an integer" "$OUT" || { cat "$OUT"; fail "no timeout text"; }
+    [[ ! -e /tmp/pwned ]] || fail "timeout executed as code"
 }
 
 test_hc_ping_paths() {
     run_lib "hc_ping $HC_URL start; hc_ping $HC_URL ok; hc_ping $HC_URL fail boom" \
-        || { cat "$OUT"; fail "hc_ping вернул ошибку"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start / /fail" ]] || { cat "$HC_LOG"; fail "пути пингов"; }
-    [[ "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" == boom ]] || { cat "$HC_LOG"; fail "тело fail"; }
+        || { cat "$OUT"; fail "hc_ping returned an error"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start / /fail" ]] || { cat "$HC_LOG"; fail "ping paths"; }
+    [[ "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" == boom ]] || { cat "$HC_LOG"; fail "fail body"; }
 
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
-    run_lib "hc_ping $HC_URL/ fail \"\$(printf 'x%.0s' {1..3000})\"" || { cat "$OUT"; fail "длинное тело"; }
-    [[ "$(hc_paths)" == /fail ]] || { cat "$HC_LOG"; fail "путь при URL со слэшем"; }
-    [[ "$(jq -r '.size' "$HC_LOG")" == 1024 ]] || { cat "$HC_LOG"; fail "тело не обрезано до 1024 байт"; }
+    run_lib "hc_ping $HC_URL/ fail \"\$(printf 'x%.0s' {1..3000})\"" || { cat "$OUT"; fail "long body"; }
+    [[ "$(hc_paths)" == /fail ]] || { cat "$HC_LOG"; fail "path with a URL with a trailing slash"; }
+    [[ "$(jq -r '.size' "$HC_LOG")" == 1024 ]] || { cat "$HC_LOG"; fail "body not truncated to 1024 bytes"; }
 
-    # Многобайтовое тело (2000 байт UTF-8) в UTF-8-локали: отправлено не больше 1024 байт.
+    # Multibyte body (2000 bytes of UTF-8) in a UTF-8 locale: no more than 1024 bytes sent.
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     run_lib "export LC_ALL=C.UTF-8; hc_ping $HC_URL fail \"\$(printf 'я%.0s' {1..1000})\"" \
-        || { cat "$OUT"; fail "многобайтовое тело"; }
+        || { cat "$OUT"; fail "multibyte body"; }
     local size
     size=$(jq -r '.size' "$HC_LOG")
-    [[ "$size" =~ ^[0-9]+$ ]] || { cat "$HC_LOG"; fail "нет размера тела"; }
-    ((size > 0 && size <= 1024)) || { cat "$HC_LOG"; fail "отправлено $size байт"; }
+    [[ "$size" =~ ^[0-9]+$ ]] || { cat "$HC_LOG"; fail "no body size"; }
+    ((size > 0 && size <= 1024)) || { cat "$HC_LOG"; fail "sent $size bytes"; }
 }
 
 test_hc_ping_rejects_bad_url() {
     run_lib "hc_ping 'http://hc:8080/x\"y' start; hc_ping 'http://hc:8080/x\\y' ok; echo rc=\$?" \
-        || { cat "$OUT"; fail "hc_ping с плохим URL вернул ошибку"; }
-    [[ "$(grep -c '^aichat-backup: healthchecks: недопустимые символы в URL, пинг пропущен$' "$OUT")" == 2 ]] \
-        || { cat "$OUT"; fail "нет предупреждений"; }
-    grep -q '^rc=0$' "$OUT" || fail "код не 0"
-    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "был запрос к hc"; }
+        || { cat "$OUT"; fail "hc_ping with a bad URL returned an error"; }
+    [[ "$(grep -c '^aichat-backup: healthchecks: invalid characters in URL, ping skipped$' "$OUT")" == 2 ]] \
+        || { cat "$OUT"; fail "no warnings"; }
+    grep -q '^rc=0$' "$OUT" || fail "code is not 0"
+    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "there was a request to hc"; }
 }
 
 test_hc_ping_unreachable_ok() {
-    run_lib "hc_ping http://hc:9 start; echo rc=\$?" || { cat "$OUT"; fail "hc_ping на закрытый порт вернул ошибку"; }
-    grep -q '^rc=0$' "$OUT" || { cat "$OUT"; fail "код не 0"; }
-    grep -q '^aichat-backup: healthchecks:' "$OUT" || { cat "$OUT"; fail "нет предупреждения в stderr"; }
-    ! grep -q 'hc:9' "$OUT" || { cat "$OUT"; fail "URL пинга попал в журнал"; }
+    run_lib "hc_ping http://hc:9 start; echo rc=\$?" || { cat "$OUT"; fail "hc_ping to a closed port returned an error"; }
+    grep -q '^rc=0$' "$OUT" || { cat "$OUT"; fail "code is not 0"; }
+    grep -q '^aichat-backup: healthchecks:' "$OUT" || { cat "$OUT"; fail "no warning in stderr"; }
+    ! grep -q 'hc:9' "$OUT" || { cat "$OUT"; fail "ping URL got into the journal"; }
 }
 
 test_hc_ping_empty_url_skipped() {
-    run_lib 'hc_ping "" start; echo rc=$?' || { cat "$OUT"; fail "hc_ping с пустым URL вернул ошибку"; }
-    grep -q '^aichat-backup: healthchecks: URL не задан, пинг пропущен$' "$OUT" || { cat "$OUT"; fail "нет предупреждения"; }
-    grep -q '^rc=0$' "$OUT" || fail "код не 0"
-    [[ ! -s "$HC_LOG" ]] || fail "был запрос к hc"
+    run_lib 'hc_ping "" start; echo rc=$?' || { cat "$OUT"; fail "hc_ping with an empty URL returned an error"; }
+    grep -q '^aichat-backup: healthchecks: URL not set, ping skipped$' "$OUT" || { cat "$OUT"; fail "no warning"; }
+    grep -q '^rc=0$' "$OUT" || fail "code is not 0"
+    [[ ! -s "$HC_LOG" ]] || fail "there was a request to hc"
 }
 
 test_lib_helpers() {
-    # load_env: нет env-файла → die с текстом
-    [[ "$(rc_of run_lib 'AICHAT_BACKUP_ENV=/nonexistent load_env')" == 1 ]] || fail "load_env без файла не упал"
-    grep -q '^aichat-backup: Нет /nonexistent$' "$OUT" || { cat "$OUT"; fail "текст ошибки load_env"; }
-    # load_env: нет пароля → die
-    [[ "$(rc_of run_lib 'load_env')" == 1 ]] || fail "load_env без пароля не упал"
+    # load_env: no env file -> die with a message
+    [[ "$(rc_of run_lib 'AICHAT_BACKUP_ENV=/nonexistent load_env')" == 1 ]] || fail "load_env without a file did not fail"
+    grep -q '^aichat-backup: Missing /nonexistent$' "$OUT" || { cat "$OUT"; fail "load_env error text"; }
+    # load_env: no password -> die
+    [[ "$(rc_of run_lib 'load_env')" == 1 ]] || fail "load_env without a password did not fail"
     use_test_password
     run_lib 'load_env; echo "$RESTIC_REPOSITORY"; bash -c "echo \$AWS_ACCESS_KEY_ID"' || { cat "$OUT"; fail "load_env"; }
     [[ "$(paste -sd ' ' "$OUT")" == "s3:http://minio:9000/aichat-test/aichat aichat-test-key" ]] \
-        || { cat "$OUT"; fail "load_env не экспортировал переменные"; }
+        || { cat "$OUT"; fail "load_env did not export the variables"; }
 
-    # write_status: каталог 700, атомарная запись (имя в state-каталоге или полный путь), без временных файлов
+    # write_status: directory 700, atomic write (name in the state directory or a full path), no temp files
     run_lib 'write_status status.json "{\"result\":\"ok\"}"; write_status "$AICHAT_STATE_DIR/r.json" "{}"' \
         || { cat "$OUT"; fail "write_status"; }
-    [[ "$(stat -c %a "$AICHAT_STATE_DIR")" == 700 ]] || fail "права state-каталога не 700"
+    [[ "$(stat -c %a "$AICHAT_STATE_DIR")" == 700 ]] || fail "state directory mode is not 700"
     [[ "$(jq -r .result "$AICHAT_STATE_DIR/status.json")" == ok ]] || fail "status.json"
     local files=("$AICHAT_STATE_DIR"/*)
-    [[ "${files[*]}" == "$AICHAT_STATE_DIR/r.json $AICHAT_STATE_DIR/status.json" ]] || fail "лишние файлы: ${files[*]}"
+    [[ "${files[*]}" == "$AICHAT_STATE_DIR/r.json $AICHAT_STATE_DIR/status.json" ]] || fail "extra files: ${files[*]}"
 
     # now_epoch
     run_lib 'AICHAT_NOW=1700000000 now_epoch' || fail "now_epoch"
-    [[ "$(cat "$OUT")" == 1700000000 ]] || fail "now_epoch с AICHAT_NOW"
+    [[ "$(cat "$OUT")" == 1700000000 ]] || fail "now_epoch with AICHAT_NOW"
     run_lib 'now_epoch' || fail "now_epoch"
-    [[ "$(cat "$OUT")" =~ ^[0-9]{10}$ ]] || fail "now_epoch без AICHAT_NOW"
+    [[ "$(cat "$OUT")" =~ ^[0-9]{10}$ ]] || fail "now_epoch without AICHAT_NOW"
 
-    # db_psql / db_dump / db_restore / restic_cmd через переопределённые команды (stdin пробрасывается)
+    # db_psql / db_dump / db_restore / restic_cmd via overridden commands (stdin is passed through)
     run_lib 'db_psql -tAc "SELECT count(*) FROM users"' || { cat "$OUT"; fail "db_psql"; }
-    [[ "$(cat "$OUT")" == 2 ]] || { cat "$OUT"; fail "db_psql: ожидалось 2 users"; }
+    [[ "$(cat "$OUT")" == 2 ]] || { cat "$OUT"; fail "db_psql: expected 2 users"; }
     run_lib 'db_dump | db_restore --list | grep -c "TABLE DATA public users"' || { cat "$OUT"; fail "db_dump | db_restore"; }
-    [[ "$(cat "$OUT")" == 1 ]] || { cat "$OUT"; fail "в дампе нет данных users"; }
+    [[ "$(cat "$OUT")" == 1 ]] || { cat "$OUT"; fail "no users data in the dump"; }
     run_lib 'load_env; restic_cmd init >/dev/null; printf "abc" | restic_cmd backup -q --stdin --stdin-filename x.txt; restic_cmd dump latest /x.txt' \
         || { cat "$OUT"; fail "restic_cmd"; }
-    [[ "$(cat "$OUT")" == abc ]] || { cat "$OUT"; fail "restic_cmd: stdin не проброшен"; }
+    [[ "$(cat "$OUT")" == abc ]] || { cat "$OUT"; fail "restic_cmd: stdin not passed through"; }
 
-    # значения по умолчанию (сервер)
+    # default values (server)
     env -u AICHAT_BACKUP_ENV -u RESTIC_PASSWORD_FILE -u AICHAT_STATE_DIR -u RESTIC_CMD -u PG_DUMP_CMD -u PSQL_CMD -u PG_RESTORE_CMD \
         bash -c ". '$BACKUP_DIR/lib.sh'; printf '%s\n' \"\$AICHAT_BACKUP_ENV\" \"\$RESTIC_PASSWORD_FILE\" \"\$AICHAT_STATE_DIR\" \"\$RESTIC_CMD\" \"\$PG_DUMP_CMD\" \"\$PSQL_CMD\" \"\$PG_RESTORE_CMD\"" >"$OUT"
-    diff -u - "$OUT" <<EOF || fail "значения по умолчанию"
+    diff -u - "$OUT" <<EOF || fail "default values"
 /etc/aichat/restic.env
 /etc/aichat/restic-password
 /var/lib/aichat-backup
@@ -340,62 +340,62 @@ test_error_text() {
     use_test_password
     run_lib 'load_env; redact "a $AWS_SECRET_ACCESS_KEY b $(cat "$RESTIC_PASSWORD_FILE") c $HC_BACKUP_URL/x d $AWS_ACCESS_KEY_ID"' \
         || { cat "$OUT"; fail "redact"; }
-    [[ "$(cat "$OUT")" == 'a *** b *** c ***/x d ***' ]] || { cat "$OUT"; fail "redact не вырезал секреты"; }
+    [[ "$(cat "$OUT")" == 'a *** b *** c ***/x d ***' ]] || { cat "$OUT"; fail "redact did not strip the secrets"; }
 
     run_lib 'error_text last "$(printf "one\ntwo\n\n  \n")"; echo; error_text first "$(printf "\n one\ntwo\n")"' \
         || { cat "$OUT"; fail "error_text"; }
-    [[ "$(paste -sd '|' "$OUT")" == 'two| one' ]] || { cat "$OUT"; fail "error_text: первая/последняя строка"; }
+    [[ "$(paste -sd '|' "$OUT")" == 'two| one' ]] || { cat "$OUT"; fail "error_text: first/last line"; }
 
-    # JSON-ошибка restic (--json) → поле message; секреты вырезаются и в нём.
+    # restic JSON error (--json) -> the message field; secrets are stripped in it too.
     run_lib 'load_env; error_text last "{\"message_type\":\"exit_error\",\"code\":1,\"message\":\"Fatal: $AWS_SECRET_ACCESS_KEY\"}"' \
         || { cat "$OUT"; fail "error_text json"; }
-    [[ "$(cat "$OUT")" == 'Fatal: ***' ]] || { cat "$OUT"; fail "error_text: message из JSON"; }
+    [[ "$(cat "$OUT")" == 'Fatal: ***' ]] || { cat "$OUT"; fail "error_text: message from JSON"; }
 
     run_lib 'error_text last "$(printf "x%.0s" {1..3000})" | wc -c; error_text last "" | wc -c' \
-        || { cat "$OUT"; fail "error_text длинная/пустая"; }
-    [[ "$(paste -sd ' ' "$OUT")" == '1024 0' ]] || { cat "$OUT"; fail "error_text: не обрезано до 1024 байт"; }
+        || { cat "$OUT"; fail "error_text long/empty"; }
+    [[ "$(paste -sd ' ' "$OUT")" == '1024 0' ]] || { cat "$OUT"; fail "error_text: not truncated to 1024 bytes"; }
 }
 
-# --- тесты: backup.sh ---------------------------------------------------------
+# --- tests: backup.sh ---------------------------------------------------------
 
 test_backup_creates_snapshot() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
-    [[ "$(snapshot_count)" == 1 ]] || { snapshots_json; fail "снапшотов не 1"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
+    [[ "$(snapshot_count)" == 1 ]] || { snapshots_json; fail "snapshots are not 1"; }
     snapshots_json | jq -e '.[0].hostname == "aichat" and .[0].paths == ["/aichat.dump"]' >/dev/null \
-        || { snapshots_json; fail "хост или путь снапшота"; }
-    # Без AICHAT_NOW снапшот — текущего времени (--time не передаётся).
+        || { snapshots_json; fail "snapshot host or path"; }
+    # Without AICHAT_NOW the snapshot has the current time (--time is not passed).
     local age
     age=$(($(date +%s) - $(date -d "$(snapshots_json | jq -r '.[0].time')" +%s)))
-    ((age >= 0 && age < 600)) || fail "время снапшота отличается от текущего на $age с"
+    ((age >= 0 && age < 600)) || fail "snapshot time differs from the current by $age s"
 
     jq -e '.result == "ok" and (.snapshot | test("^[0-9a-f]{8}$")) and (.size_bytes > 0)
         and (.duration_s | type == "number") and .error == null
         and (.time | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' "$STATUS" >/dev/null \
         || { cat "$STATUS"; fail "status.json"; }
     [[ "$(jq -r .snapshot "$STATUS")" == "$(snapshots_json | jq -r '.[0].short_id')" ]] \
-        || { cat "$STATUS"; fail "snapshot в status.json не совпадает со снапшотом"; }
+        || { cat "$STATUS"; fail "snapshot in status.json does not match the snapshot"; }
     local size
     size=$(restic_t dump latest /aichat.dump | wc -c)
-    [[ "$(jq -r .size_bytes "$STATUS")" == "$size" ]] || { cat "$STATUS"; fail "size_bytes != размер дампа ($size)"; }
+    [[ "$(jq -r .size_bytes "$STATUS")" == "$size" ]] || { cat "$STATUS"; fail "size_bytes != dump size ($size)"; }
     restic_t dump latest /aichat.dump | pg_restore --list | grep -q "TABLE DATA public users" \
-        || fail "в снапшоте нет дампа с данными users"
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /" ]] || { cat "$HC_LOG"; fail "пинги не /start, /"; }
+        || fail "no dump with users data in the snapshot"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /" ]] || { cat "$HC_LOG"; fail "pings are not /start, /"; }
 }
 
 test_backup_never_inits() {
     use_test_password
     local rc
     rc=$(rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "без репозитория: код $rc"; }
-    local msg="Репозиторий не найден — init не выполняется, проверьте бакет (возможна атака)"
-    grep -qF "$msg" "$OUT" || { cat "$OUT"; fail "нет сообщения о ненайденном репозитории"; }
-    [[ "$(rc_of restic_t cat config 2>/dev/null)" != 0 ]] || fail "репозиторий создан"
-    [[ -z "$(mc ls --recursive "t/$BUCKET")" ]] || fail "backup.sh что-то записал в бакет"
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "no repository: code $rc"; }
+    local msg="Repository not found - init is not performed, check the bucket (possible attack)"
+    grep -qF "$msg" "$OUT" || { cat "$OUT"; fail "no repository-not-found message"; }
+    [[ "$(rc_of restic_t cat config 2>/dev/null)" != 0 ]] || fail "repository created"
+    [[ -z "$(mc ls --recursive "t/$BUCKET")" ]] || fail "backup.sh wrote something to the bucket"
     jq -e --arg msg "$msg" '.result == "error" and .snapshot == null and .size_bytes == null and .error == $msg' \
         "$STATUS" >/dev/null || { cat "$STATUS"; fail "status.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги не /start, /fail"; }
-    [[ "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" == "$msg" ]] || { cat "$HC_LOG"; fail "тело /fail"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings are not /start, /fail"; }
+    [[ "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" == "$msg" ]] || { cat "$HC_LOG"; fail "/fail body"; }
 }
 
 test_pg_dump_failure_no_snapshot() {
@@ -403,27 +403,27 @@ test_pg_dump_failure_no_snapshot() {
     export PG_DUMP_CMD="sh -c 'echo partial; exit 3'"
     local rc
     rc=$(rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой pg_dump: код $rc"; }
-    # restic успел записать снапшот из неполного дампа — backup.sh обязан его удалить.
-    grep -q "из неполного дампа удалён" "$OUT" || { cat "$OUT"; fail "снапшот неполного дампа не удалялся"; }
-    [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "остался снапшот"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "pg_dump failure: code $rc"; }
+    # restic managed to write a snapshot from the incomplete dump - backup.sh must remove it.
+    grep -q "from the incomplete dump removed" "$OUT" || { cat "$OUT"; fail "the incomplete dump snapshot was not removed"; }
+    [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "snapshot left behind"; }
     jq -e '.result == "error" and .snapshot == null and (.error | startswith("pg_dump: "))' "$STATUS" >/dev/null \
         || { cat "$STATUS"; fail "status.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
-    [[ -n "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" ]] || { cat "$HC_LOG"; fail "пустое тело /fail"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
+    [[ -n "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" ]] || { cat "$HC_LOG"; fail "empty /fail body"; }
 
-    # Последняя содержательная строка stderr pg_dump — в тексте ошибки.
+    # The last meaningful stderr line of pg_dump is in the error text.
     export PG_DUMP_CMD="sh -c 'echo partial; echo \"pg_dump: error: connection refused\" >&2; echo >&2; exit 1'"
     rc=$(rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой pg_dump (2): код $rc"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "pg_dump failure (2): code $rc"; }
     [[ "$(jq -r .error "$STATUS")" == "pg_dump: pg_dump: error: connection refused" ]] \
-        || { cat "$STATUS"; fail "текст ошибки pg_dump"; }
-    [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "остался снапшот (2)"; }
+        || { cat "$STATUS"; fail "pg_dump error text"; }
+    [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "snapshot left behind (2)"; }
 }
 
 test_restic_backup_failure() {
     init_test_repo
-    # Настоящий restic, но `backup` — с неверным паролем: ошибка в JSON (exit_error) на stderr.
+    # Real restic, but `backup` with a wrong password: a JSON error (exit_error) on stderr.
     printf 'wrong-password\n' >/tmp/wrong-password
     cat >/tmp/badpw-restic <<'EOF'
 #!/bin/sh
@@ -433,33 +433,33 @@ EOF
     chmod +x /tmp/badpw-restic
     local rc
     rc=$(RESTIC_CMD=/tmp/badpw-restic rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой restic backup: код $rc"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "restic backup failure: code $rc"; }
     [[ "$(jq -r .error "$STATUS")" == "restic backup: Fatal: wrong password or no key found" ]] \
-        || { cat "$STATUS"; fail "текст ошибки restic backup"; }
-    [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "есть снапшот"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+        || { cat "$STATUS"; fail "restic backup error text"; }
+    [[ "$(snapshot_count)" == 0 ]] || { snapshots_json; fail "there is a snapshot"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
 
-    # Дамп больше буфера канала: restic вышел, не читая, — pg_dump получает SIGPIPE (141);
-    # это следствие, а не причина, и в текст ошибки не попадает.
+    # The dump is larger than the pipe buffer: restic exited without reading - pg_dump gets SIGPIPE (141);
+    # that is a consequence, not the cause, and it does not appear in the error text.
     export PG_DUMP_CMD="sh -c 'yes | head -c 10000000'"
     rc=$(RESTIC_CMD=/tmp/badpw-restic rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой restic backup (SIGPIPE): код $rc"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "restic backup failure (SIGPIPE): code $rc"; }
     [[ "$(jq -r .error "$STATUS")" == "restic backup: Fatal: wrong password or no key found" ]] \
-        || { cat "$STATUS"; fail "текст ошибки при SIGPIPE у pg_dump"; }
+        || { cat "$STATUS"; fail "error text on pg_dump SIGPIPE"; }
 }
 
 test_backup_env_error() {
-    # Нет пароля репозитория: load_env падает до пингов (URL пинга ещё не известен),
-    # но status.json получает ошибку — старый «ok» не остаётся.
+    # No repository password: load_env fails before the pings (the ping URL is not known yet),
+    # but status.json gets the error - a stale "ok" does not remain.
     install -d -m 700 "$AICHAT_STATE_DIR"
     echo '{"result":"ok"}' >"$STATUS"
     local rc
     rc=$(rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    grep -q "Нет файла пароля репозитория" "$OUT" || { cat "$OUT"; fail "нет сообщения"; }
-    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Нет файла пароля репозитория"))' \
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    grep -q "Repository password file" "$OUT" || { cat "$OUT"; fail "no message"; }
+    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Repository password file"))' \
         "$STATUS" >/dev/null || { cat "$STATUS"; fail "status.json"; }
-    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "были пинги"; }
+    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "there were pings"; }
 }
 
 test_cleanup_forget_failure_redacted() {
@@ -468,23 +468,23 @@ test_cleanup_forget_failure_redacted() {
     export PG_DUMP_CMD="sh -c 'echo partial; exit 3'"
     local rc
     rc=$(RESTIC_CMD=/tmp/leaky-restic rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    jq -e '.error | test("^pg_dump: код выхода 3; не удалось удалить снапшот [0-9a-f]{8} из неполного дампа: Fatal: forget \\*\\*\\* \\*\\*\\*$")' \
-        "$STATUS" >/dev/null || { cat "$STATUS"; fail "текст ошибки удаления снапшота"; }
-    # stderr неудачного forget — в журнале, с вырезанными секретами.
-    grep -qx 'Fatal: forget \*\*\* \*\*\*' "$OUT" || { cat "$OUT"; fail "stderr forget не в журнале"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    jq -e '.error | test("^pg_dump: exit code 3; could not remove snapshot [0-9a-f]{8} from the incomplete dump: Fatal: forget \\*\\*\\* \\*\\*\\*$")' \
+        "$STATUS" >/dev/null || { cat "$STATUS"; fail "snapshot removal error text"; }
+    # stderr of the failed forget is in the journal, with secrets stripped.
+    grep -qx 'Fatal: forget \*\*\* \*\*\*' "$OUT" || { cat "$OUT"; fail "forget stderr not in the journal"; }
     local all=/tmp/all-output
     cat "$OUT" "$STATUS" >"$all"
     jq -r .body "$HC_LOG" >>"$all"
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
     assert_no_secrets "$all"
     assert_no_key_id "$all"
 }
 
 test_sigterm_mid_dump_no_snapshot() {
     init_test_repo
-    # Дамп «зависает» на 3 с; SIGTERM приходит backup.sh во время дампа. Дамп затем завершается,
-    # restic сохраняет снапшот — backup.sh обязан его удалить и сообщить о прерывании.
+    # The dump "hangs" for 3 s; SIGTERM reaches backup.sh during the dump. The dump then finishes,
+    # restic saves a snapshot - backup.sh must remove it and report the interruption.
     export PG_DUMP_CMD="sh -c 'touch /tmp/dump-started; echo partial; sleep 3; echo rest'"
     rm -f /tmp/dump-started
     bash "$BACKUP_DIR/backup.sh" >"$OUT" 2>&1 &
@@ -493,27 +493,27 @@ test_sigterm_mid_dump_no_snapshot() {
         [[ ! -e /tmp/dump-started ]] || break
         sleep 0.2
     done
-    [[ -e /tmp/dump-started ]] || { kill "$pid"; cat "$OUT"; fail "дамп не начался"; }
+    [[ -e /tmp/dump-started ]] || { kill "$pid"; cat "$OUT"; fail "the dump did not start"; }
     kill -TERM "$pid"
     wait "$pid" || rc=$?
-    ((rc != 0)) || { cat "$OUT"; fail "прерванный бэкап вернул 0"; }
-    [[ "$(snapshot_count)" == 0 ]] || { cat "$OUT"; snapshots_json; fail "остался снапшот прерванного дампа"; }
-    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Бэкап прерван сигналом (таймаут/остановка)"))' \
+    ((rc != 0)) || { cat "$OUT"; fail "interrupted backup returned 0"; }
+    [[ "$(snapshot_count)" == 0 ]] || { cat "$OUT"; snapshots_json; fail "snapshot of the interrupted dump left behind"; }
+    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Backup interrupted by a signal (timeout/stop)"))' \
         "$STATUS" >/dev/null || { cat "$OUT" "$STATUS"; fail "status.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
-    [[ -n "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" ]] || fail "пустое тело /fail"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
+    [[ -n "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" ]] || fail "empty /fail body"
 }
 
 test_unexpected_error_reported() {
     init_test_repo
-    # die внутри lib.sh (не через fail) — статус и /fail всё равно отправляются из trap EXIT.
+    # die inside lib.sh (not via fail) - the status and /fail are still sent from trap EXIT.
     local rc
     rc=$(AICHAT_REPO_CHECK_TIMEOUT=abc rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    jq -e '.result == "error" and (.error | startswith("Непредвиденная ошибка backup.sh (код 1)"))' "$STATUS" >/dev/null \
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    jq -e '.result == "error" and (.error | startswith("Unexpected backup.sh error (code 1)"))' "$STATUS" >/dev/null \
         || { cat "$STATUS"; fail "status.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
-    [[ -z "$(find /tmp -maxdepth 1 -name 'tmp.*')" ]] || fail "временный каталог не удалён"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
+    [[ -z "$(find /tmp -maxdepth 1 -name 'tmp.*')" ]] || fail "temporary directory not removed"
 }
 
 test_rotation_applied() {
@@ -522,16 +522,16 @@ test_rotation_applied() {
     base=$(date -u -d '2026-01-01 03:30:00' +%s)
     for i in $(seq 0 9); do
         export AICHAT_NOW=$((base + i * 86400))
-        run_script backup.sh || { cat "$OUT"; fail "бэкап дня $i упал"; }
+        run_script backup.sh || { cat "$OUT"; fail "backup of day $i failed"; }
     done
     local count
     count=$(snapshot_count)
-    ((count < 10)) || { snapshots_json; fail "ротация не применена: $count снапшотов"; }
+    ((count < 10)) || { snapshots_json; fail "rotation not applied: $count snapshots"; }
     local days
     days=$(snapshots_json | jq -r '.[].time[:10]')
     for i in $(seq 3 9); do
         grep -qx "$(date -u -d "@$((base + i * 86400))" +%F)" <<<"$days" \
-            || { echo "$days"; fail "нет снапшота дня $i"; }
+            || { echo "$days"; fail "no snapshot of day $i"; }
     done
 }
 
@@ -539,13 +539,13 @@ test_check_on_sunday_only() {
     init_test_repo
     local sunday
     sunday=$(date -u -d '2026-01-04 03:30:00' +%s)
-    [[ "$(date -u -d "@$sunday" +%u)" == 7 ]] || fail "2026-01-04 не воскресенье"
+    [[ "$(date -u -d "@$sunday" +%u)" == 7 ]] || fail "2026-01-04 is not a Sunday"
     export AICHAT_NOW=$sunday
-    run_script backup.sh || { cat "$OUT"; fail "бэкап в воскресенье упал"; }
-    grep -q "no errors were found" "$OUT" || { cat "$OUT"; fail "в воскресенье нет restic check"; }
+    run_script backup.sh || { cat "$OUT"; fail "Sunday backup failed"; }
+    grep -q "no errors were found" "$OUT" || { cat "$OUT"; fail "no restic check on Sunday"; }
     export AICHAT_NOW=$((sunday + 86400))
-    run_script backup.sh || { cat "$OUT"; fail "бэкап в понедельник упал"; }
-    ! grep -q "no errors were found" "$OUT" || { cat "$OUT"; fail "restic check не в воскресенье"; }
+    run_script backup.sh || { cat "$OUT"; fail "Monday backup failed"; }
+    ! grep -q "no errors were found" "$OUT" || { cat "$OUT"; fail "restic check not on Sunday"; }
 }
 
 test_no_secrets_in_output() {
@@ -555,26 +555,26 @@ test_no_secrets_in_output() {
         cat "$OUT" "$STATUS" >>"$all"
         jq -r .body "$HC_LOG" >>"$all"
     }
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     collect
 
-    # Неверный ключ AWS.
+    # Wrong AWS key.
     local env=/tmp/bad-key.env rc
     sed 's/^AWS_SECRET_ACCESS_KEY=.*/AWS_SECRET_ACCESS_KEY=wrong-secret/' "$AICHAT_BACKUP_ENV" >"$env"
     rc=$(AICHAT_BACKUP_ENV=$env rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "неверный ключ: код $rc"; }
-    grep -q "Нет доступа к репозиторию: " "$OUT" || { cat "$OUT"; fail "нет текста об ошибке доступа"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "wrong key: code $rc"; }
+    grep -q "Cannot access the repository: " "$OUT" || { cat "$OUT"; fail "no access error text"; }
     collect
 
     make_leaky_restic
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     rc=$(RESTIC_CMD=/tmp/leaky-restic rc_of run_script backup.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "сбой forget: код $rc"; }
-    grep -qF 'leak: *** *** *** ***' "$OUT" || { cat "$OUT"; fail "stderr restic не попал в журнал с вырезанными секретами"; }
-    [[ "$(jq -r .error "$STATUS")" == 'restic forget: Fatal: forget *** ***' ]] || { cat "$STATUS"; fail "текст ошибки forget"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "forget failure: code $rc"; }
+    grep -qF 'leak: *** *** *** ***' "$OUT" || { cat "$OUT"; fail "restic stderr did not reach the journal with secrets stripped"; }
+    [[ "$(jq -r .error "$STATUS")" == 'restic forget: Fatal: forget *** ***' ]] || { cat "$STATUS"; fail "forget error text"; }
     collect
 
-    [[ "$(jq -r .path "$HC_LOG" | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+    [[ "$(jq -r .path "$HC_LOG" | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
     assert_no_secrets "$all"
     assert_no_key_id "$all"
 }
@@ -583,18 +583,18 @@ test_dump_never_touches_disk() {
     init_test_repo
     touch /tmp/marker
     sleep 1
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     local found
     found=$(find / -xdev -name '*.dump' -newer /tmp/marker 2>/dev/null)
-    [[ -z "$found" ]] || fail "файлы дампа на диске: $found"
-    # Временный каталог для stderr шагов удалён.
+    [[ -z "$found" ]] || fail "dump files on disk: $found"
+    # The temporary directory for step stderr is removed.
     found=$(find /tmp -maxdepth 1 -name 'tmp.*' -newer /tmp/marker)
-    [[ -z "$found" ]] || fail "остались временные файлы: $found"
+    [[ -z "$found" ]] || fail "temporary files left behind: $found"
 }
 
 test_stale_lock_removed() {
     init_test_repo
-    # Фоновый подшелл сам становится restic (exec): $! — PID процесса restic.
+    # The background subshell itself becomes restic (exec): $! is the PID of the restic process.
     (
         set -a
         # shellcheck source=/dev/null
@@ -608,19 +608,19 @@ test_stale_lock_removed() {
         [[ -z "$locks" ]] || break
         sleep 0.5
     done
-    [[ -n "$locks" ]] || fail "lock не появился"
+    [[ -n "$locks" ]] || fail "lock did not appear"
     kill -9 "$pid"
     wait "$pid" 2>/dev/null || true
-    ! kill -0 "$pid" 2>/dev/null || fail "процесс restic жив"
+    ! kill -0 "$pid" 2>/dev/null || fail "restic process is alive"
     restic_t cat lock "$locks" | jq -e --arg h "$(hostname)" --argjson pid "$pid" \
-        '.hostname == $h and .pid == $pid' >/dev/null || { restic_t cat lock "$locks"; fail "lock не того процесса"; }
+        '.hostname == $h and .pid == $pid' >/dev/null || { restic_t cat lock "$locks"; fail "lock of the wrong process"; }
 
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh со старым lock упал"; }
-    [[ -z "$(restic_t list locks --no-lock)" ]] || fail "lock не снят"
-    [[ "$(snapshot_count)" == 1 ]] || { snapshots_json; fail "снапшотов не 1"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh with a stale lock failed"; }
+    [[ -z "$(restic_t list locks --no-lock)" ]] || fail "lock not removed"
+    [[ "$(snapshot_count)" == 1 ]] || { snapshots_json; fail "snapshots are not 1"; }
 }
 
-# Команды, которые могут столкнуться с lock ещё идущего prune, ждут его (--retry-lock 30m).
+# Commands that may run into the lock of a still-running prune wait for it (--retry-lock 30m).
 test_retry_lock_used() {
     init_test_repo
     cat >/tmp/argrec-restic <<'EOF'
@@ -630,110 +630,110 @@ exec restic "$@"
 EOF
     chmod +x /tmp/argrec-restic
     rm -f /tmp/restic-args
-    RESTIC_CMD=/tmp/argrec-restic run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
-    RESTIC_CMD=/tmp/argrec-restic run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh вернул ошибку"; }
+    RESTIC_CMD=/tmp/argrec-restic run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
+    RESTIC_CMD=/tmp/argrec-restic run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh returned an error"; }
     local cmd
     for cmd in backup forget snapshots dump; do
         grep -q "^$cmd --retry-lock 30m " /tmp/restic-args \
-            || { cat /tmp/restic-args; fail "restic $cmd без --retry-lock 30m"; }
+            || { cat /tmp/restic-args; fail "restic $cmd without --retry-lock 30m"; }
     done
 }
 
-# --- тесты: restore-test.sh ---------------------------------------------------
+# --- tests: restore-test.sh ---------------------------------------------------
 
 test_restore_ok() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
-    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh вернул ошибку"; }
+    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh returned an error"; }
     jq -e --arg id "$(snapshots_json | jq -r '.[0].short_id')" \
         '.result == "ok" and .snapshot == $id and .users == 2 and .error == null
         and (.snapshot_age_h | type == "number" and . >= 0 and . < 1)
         and (.time | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' "$RESTORE_STATUS" >/dev/null \
         || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /" ]] || { cat "$HC_LOG"; fail "пинги не /start, /"; }
-    ! db_exists restore_test || fail "restore_test не удалена"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /" ]] || { cat "$HC_LOG"; fail "pings are not /start, /"; }
+    ! db_exists restore_test || fail "restore_test not dropped"
 }
 
 test_restore_fails_on_stale_snapshot() {
     init_test_repo
     export AICHAT_NOW=$RT_BASE
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
 
-    # 47 часов — ещё в норме.
-    AICHAT_NOW=$((RT_BASE + 47 * 3600)) run_script restore-test.sh || { cat "$OUT"; fail "снапшот 47 ч: ошибка"; }
+    # 47 hours - still fine.
+    AICHAT_NOW=$((RT_BASE + 47 * 3600)) run_script restore-test.sh || { cat "$OUT"; fail "47 h snapshot: error"; }
     jq -e '.result == "ok" and .snapshot_age_h == 47' "$RESTORE_STATUS" >/dev/null \
-        || { cat "$RESTORE_STATUS"; fail "snapshot_age_h при 47 ч"; }
+        || { cat "$RESTORE_STATUS"; fail "snapshot_age_h at 47 h"; }
 
-    # 49 часов — ошибка, БД не создавалась.
+    # 49 hours - an error, the DB was not created.
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
-    local rc msg="Последний снапшот старше 48 часов: бэкапы не создаются"
+    local rc msg="The latest snapshot is older than 48 hours: backups are not being created"
     rc=$(AICHAT_NOW=$((RT_BASE + 49 * 3600)) rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "снапшот 49 ч: код $rc"; }
-    grep -qF "$msg" "$OUT" || { cat "$OUT"; fail "нет сообщения о 48 часах"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "49 h snapshot: code $rc"; }
+    grep -qF "$msg" "$OUT" || { cat "$OUT"; fail "no 48 hours message"; }
     jq -e --arg msg "$msg" '.result == "error" and .error == $msg and .users == null and .snapshot_age_h == 49
         and (.snapshot | test("^[0-9a-f]{8}$"))' "$RESTORE_STATUS" >/dev/null \
         || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги не /start, /fail"; }
-    [[ "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" == "$msg" ]] || { cat "$HC_LOG"; fail "тело /fail"; }
-    ! db_exists restore_test || fail "restore_test осталась"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings are not /start, /fail"; }
+    [[ "$(jq -r 'select(.path == "/fail") | .body' "$HC_LOG")" == "$msg" ]] || { cat "$HC_LOG"; fail "/fail body"; }
+    ! db_exists restore_test || fail "restore_test left behind"
 }
 
 test_restore_db_dropped_on_failure() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     local rc
     rc=$(PG_RESTORE_CMD="sh -c 'cat >/dev/null; exit 1'" rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    ! db_exists restore_test || fail "restore_test осталась после сбоя"
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    ! db_exists restore_test || fail "restore_test left behind after the failure"
     jq -e '.result == "error" and .users == null and (.error | startswith("pg_restore: "))' "$RESTORE_STATUS" >/dev/null \
         || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
 
-    # Сбой проверки содержимого (таблица users пуста) — тоже ошибка, БД удалена.
+    # A content check failure (the users table is empty) is also an error, the DB is dropped.
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     rc=$(PG_RESTORE_CMD="sh -c 'cat >/dev/null; psql -h db -U aichat -d restore_test -c \"CREATE TABLE users (id int); CREATE TABLE alembic_version (v text)\"'" \
         rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "пустая users: код $rc"; }
-    jq -e '.result == "error" and (.error | test("users пуста"))' "$RESTORE_STATUS" >/dev/null \
-        || { cat "$RESTORE_STATUS"; fail "ошибка пустой users"; }
-    ! db_exists restore_test || fail "restore_test осталась после пустой users"
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "empty users: code $rc"; }
+    jq -e '.result == "error" and (.error | test("Table users is empty"))' "$RESTORE_STATUS" >/dev/null \
+        || { cat "$RESTORE_STATUS"; fail "empty users error"; }
+    ! db_exists restore_test || fail "restore_test left behind after the empty users"
 }
 
 test_restore_fails_without_snapshots() {
     init_test_repo
-    local rc msg="В репозитории нет снапшотов aichat-db: бэкапы не создаются"
+    local rc msg="No aichat-db snapshots in the repository: backups are not being created"
     rc=$(rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    grep -qF "$msg" "$OUT" || { cat "$OUT"; fail "нет сообщения об отсутствии снапшотов"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    grep -qF "$msg" "$OUT" || { cat "$OUT"; fail "no no-snapshots message"; }
     jq -e --arg msg "$msg" '.result == "error" and .error == $msg and .snapshot == null and .snapshot_age_h == null' \
         "$RESTORE_STATUS" >/dev/null || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
-    ! db_exists restore_test || fail "restore_test создана"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
+    ! db_exists restore_test || fail "restore_test created"
 
-    # Репозитория нет вовсе — ошибка restic в статусе.
+    # There is no repository at all - a restic error in the status.
     reset_env
     use_test_password
     rc=$(rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "без репозитория: код $rc"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "no repository: code $rc"; }
     jq -e '.result == "error" and (.error | startswith("restic snapshots: "))' "$RESTORE_STATUS" >/dev/null \
-        || { cat "$RESTORE_STATUS"; fail "restore-test.json без репозитория"; }
+        || { cat "$RESTORE_STATUS"; fail "restore-test.json without a repository"; }
 }
 
 test_restore_does_not_touch_live_db() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
-    # Меняем рабочую БД после бэкапа: восстановленная копия (2 users) не должна затронуть её.
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
+    # Change the working DB after the backup: the restored copy (2 users) must not touch it.
     local extra
     extra=$(psql -h db -U aichat -d aichat -tAq -c 'INSERT INTO users DEFAULT VALUES RETURNING id') || fail "INSERT"
-    # shellcheck disable=SC2064  # id известен сейчас; тест идёт в подшелле, ловушка не выходит за него
+    # shellcheck disable=SC2064  # the id is known now; the test runs in a subshell, the trap does not leak out of it
     trap "psql -h db -U aichat -d aichat -qc 'DELETE FROM users WHERE id = $extra'" EXIT
-    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh вернул ошибку"; }
-    [[ "$(psql -h db -U aichat -d aichat -tAc 'SELECT count(*) FROM users')" == 3 ]] || fail "рабочая БД изменена"
-    [[ "$(psql -h db -U aichat -d aichat -tAc 'SELECT count(*) FROM alembic_version')" == 1 ]] || fail "alembic_version изменена"
-    jq -e '.users == 2' "$RESTORE_STATUS" >/dev/null || { cat "$RESTORE_STATUS"; fail "в копии не 2 users"; }
+    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh returned an error"; }
+    [[ "$(psql -h db -U aichat -d aichat -tAc 'SELECT count(*) FROM users')" == 3 ]] || fail "working DB changed"
+    [[ "$(psql -h db -U aichat -d aichat -tAc 'SELECT count(*) FROM alembic_version')" == 1 ]] || fail "alembic_version changed"
+    jq -e '.users == 2' "$RESTORE_STATUS" >/dev/null || { cat "$RESTORE_STATUS"; fail "the copy does not have 2 users"; }
 }
 
 test_restore_env_error() {
@@ -741,16 +741,16 @@ test_restore_env_error() {
     echo '{"result":"ok"}' >"$RESTORE_STATUS"
     local rc
     rc=$(rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    grep -q "Нет файла пароля репозитория" "$OUT" || { cat "$OUT"; fail "нет сообщения"; }
-    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Нет файла пароля репозитория"))' \
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    grep -q "Repository password file" "$OUT" || { cat "$OUT"; fail "no message"; }
+    jq -e '.result == "error" and .snapshot == null and (.error | startswith("Repository password file"))' \
         "$RESTORE_STATUS" >/dev/null || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "были пинги"; }
+    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "there were pings"; }
 }
 
 test_restore_sigterm_drops_db() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
     rm -f /tmp/restore-started
     export PG_RESTORE_CMD="sh -c 'touch /tmp/restore-started; sleep 3; cat >/dev/null'"
@@ -760,21 +760,21 @@ test_restore_sigterm_drops_db() {
         [[ ! -e /tmp/restore-started ]] || break
         sleep 0.2
     done
-    [[ -e /tmp/restore-started ]] || { kill "$pid"; cat "$OUT"; fail "восстановление не началось"; }
+    [[ -e /tmp/restore-started ]] || { kill "$pid"; cat "$OUT"; fail "the restore did not start"; }
     kill -TERM "$pid"
     wait "$pid" || rc=$?
-    ((rc != 0)) || { cat "$OUT"; fail "прерванная проверка вернула 0"; }
-    jq -e '.result == "error" and (.error | startswith("Проверка восстановления прервана сигналом"))' "$RESTORE_STATUS" >/dev/null \
+    ((rc != 0)) || { cat "$OUT"; fail "interrupted check returned 0"; }
+    jq -e '.result == "error" and (.error | startswith("Restore check interrupted by a signal"))' "$RESTORE_STATUS" >/dev/null \
         || { cat "$OUT" "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
-    ! db_exists restore_test || fail "restore_test осталась после сигнала"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
+    ! db_exists restore_test || fail "restore_test left behind after the signal"
 }
 
 test_restore_no_secrets_on_failure() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
-    # restic, печатающий секреты на каждом вызове и падающий на dump с секретами в тексте ошибки.
+    # restic that prints secrets on every call and fails on dump with secrets in the error text.
     cat >/tmp/leaky-dump-restic <<'EOS'
 #!/bin/sh
 echo "leak: $AWS_SECRET_ACCESS_KEY $AWS_ACCESS_KEY_ID $HC_BACKUP_URL $HC_RESTORE_URL $(cat "$RESTIC_PASSWORD_FILE")" >&2
@@ -787,35 +787,35 @@ EOS
     chmod +x /tmp/leaky-dump-restic
     local rc
     rc=$(RESTIC_CMD=/tmp/leaky-dump-restic rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    grep -qF 'leak: *** *** *** *** ***' "$OUT" || { cat "$OUT"; fail "stderr restic не попал в журнал с вырезанными секретами"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    grep -qF 'leak: *** *** *** *** ***' "$OUT" || { cat "$OUT"; fail "restic stderr did not reach the journal with secrets stripped"; }
     jq -e '.error | startswith("restic dump: Fatal: dump *** *** ***")' "$RESTORE_STATUS" >/dev/null \
-        || { cat "$RESTORE_STATUS"; fail "текст ошибки restic dump"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "пинги"; }
+        || { cat "$RESTORE_STATUS"; fail "restic dump error text"; }
+    [[ "$(hc_paths | paste -sd ' ')" == "/start /fail" ]] || { cat "$HC_LOG"; fail "pings"; }
     local all=/tmp/all-output
     cat "$OUT" "$RESTORE_STATUS" >"$all"
     jq -r .body "$HC_LOG" >>"$all"
     assert_no_secrets "$all"
     assert_no_key_id "$all"
-    ! db_exists restore_test || fail "restore_test осталась"
+    ! db_exists restore_test || fail "restore_test left behind"
 }
 
 test_restore_drops_db_with_open_connection() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
-    # «pg_restore» создаёт таблицы и оставляет открытое соединение с restore_test (как после SIGTERM клиента).
+    # "pg_restore" creates the tables and leaves an open connection to restore_test (as after a client SIGTERM).
     export PG_RESTORE_CMD="sh -c 'cat >/dev/null; psql -h db -U aichat -d restore_test -qc \"CREATE TABLE users (id int); INSERT INTO users VALUES (1); CREATE TABLE alembic_version (v text); INSERT INTO alembic_version VALUES (1)\"; psql -h db -U aichat -d restore_test -c \"select pg_sleep(60)\" >/dev/null 2>&1 &'"
-    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh вернул ошибку"; }
-    ! db_exists restore_test || fail "restore_test осталась из-за открытого соединения"
+    run_script restore-test.sh || { cat "$OUT"; fail "restore-test.sh returned an error"; }
+    ! db_exists restore_test || fail "restore_test left behind because of an open connection"
     jq -e '.result == "ok" and .users == 1' "$RESTORE_STATUS" >/dev/null || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
 }
 
 test_restore_drop_failure_is_error() {
     init_test_repo
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     curl -fsS -X POST "$HC_URL/reset" >/dev/null
-    # psql-обёртка: после восстановления отказывается удалять restore_test.
+    # psql wrapper: after the restore it refuses to drop restore_test.
     cat >/tmp/nodrop-psql <<'EOS'
 #!/bin/sh
 case "$*" in *"DROP DATABASE"*) [ -e /tmp/restore-done ] && { echo "ERROR: cannot drop restore_test" >&2; exit 1; } ;; esac
@@ -827,43 +827,43 @@ EOS
     export PG_RESTORE_CMD="sh -c 'cat >/dev/null; psql -h db -U aichat -d restore_test -qc \"CREATE TABLE users (id int); INSERT INTO users VALUES (1); CREATE TABLE alembic_version (v text); INSERT INTO alembic_version VALUES (1)\"; touch /tmp/restore-done'"
     local rc
     rc=$(rc_of run_script restore-test.sh)
-    # Убираем остаток, чтобы не мешать следующим тестам (до проверок: при падении теста БД не остаётся).
+    # Clean up the leftover so as not to disturb the next tests (before the checks: when a test fails the DB does not remain).
     local left
     left=$(db_exists restore_test && echo yes || echo no)
     psql -h db -U aichat -d aichat -qc 'DROP DATABASE IF EXISTS restore_test WITH (FORCE)'
-    [[ "$left" == yes ]] || fail "restore_test должна была остаться (имитация сбоя удаления)"
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    jq -e '.result == "error" and .users == 1 and (.error | test("не удалось удалить временную БД restore_test"))' "$RESTORE_STATUS" >/dev/null \
+    [[ "$left" == yes ]] || fail "restore_test should have remained (simulated drop failure)"
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    jq -e '.result == "error" and .users == 1 and (.error | test("could not drop the temporary DB restore_test"))' "$RESTORE_STATUS" >/dev/null \
         || { cat "$RESTORE_STATUS"; fail "restore-test.json"; }
-    [[ "$(hc_paths | paste -sd ' ')" == "/start / /fail" ]] || { cat "$HC_LOG"; fail "пинги не /start, /, /fail"; }
-    jq -r 'select(.path == "/fail") | .body' "$HC_LOG" | grep -q "restore_test" || fail "тело /fail"
+    [[ "$(hc_paths | paste -sd ' ')" == "/start / /fail" ]] || { cat "$HC_LOG"; fail "pings are not /start, /, /fail"; }
+    jq -r 'select(.path == "/fail") | .body' "$HC_LOG" | grep -q "restore_test" || fail "/fail body"
 }
 
 test_restore_fails_on_future_snapshot() {
     init_test_repo
     export AICHAT_NOW=$RT_BASE
-    run_script backup.sh || { cat "$OUT"; fail "backup.sh вернул ошибку"; }
+    run_script backup.sh || { cat "$OUT"; fail "backup.sh returned an error"; }
     local rc
     rc=$(AICHAT_NOW=$((RT_BASE - 2 * 3600)) rc_of run_script restore-test.sh)
-    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "код $rc"; }
-    grep -q "в будущем" "$OUT" || { cat "$OUT"; fail "нет сообщения"; }
-    ! db_exists restore_test || fail "restore_test создана"
-    AICHAT_NOW=$((RT_BASE - 1800)) run_script restore-test.sh || { cat "$OUT"; fail "сдвиг 30 мин должен проходить"; }
+    [[ "$rc" == 1 ]] || { cat "$OUT"; fail "code $rc"; }
+    grep -q "in the future" "$OUT" || { cat "$OUT"; fail "no message"; }
+    ! db_exists restore_test || fail "restore_test created"
+    AICHAT_NOW=$((RT_BASE - 1800)) run_script restore-test.sh || { cat "$OUT"; fail "a 30 min shift must pass"; }
 }
 
 test_iso_to_epoch() {
     run_lib 'iso_to_epoch 2026-01-01T03:30:00Z; iso_to_epoch 2026-01-01T03:30:00.123456789Z;
         iso_to_epoch 2026-01-01T05:30:00.5+02:00; iso_to_epoch 2026-01-01T03:30:00-00:00; iso_to_epoch 2025-12-31T22:30:00.25-05:00' \
         || { cat "$OUT"; fail "iso_to_epoch"; }
-    [[ "$(sort -u "$OUT" | paste -sd ' ')" == "$RT_BASE" ]] || { cat "$OUT"; fail "iso_to_epoch: разные эпохи, ожидалось $RT_BASE"; }
-    [[ "$(rc_of run_lib 'iso_to_epoch not-a-time')" != 0 ]] || fail "iso_to_epoch принял мусор"
+    [[ "$(sort -u "$OUT" | paste -sd ' ')" == "$RT_BASE" ]] || { cat "$OUT"; fail "iso_to_epoch: different epochs, expected $RT_BASE"; }
+    [[ "$(rc_of run_lib 'iso_to_epoch not-a-time')" != 0 ]] || fail "iso_to_epoch accepted garbage"
 }
 
 test_shellcheck() {
-    shellcheck -x "$BACKUP_DIR"/*.sh "$TEST_DIR/run.sh" || fail "shellcheck нашёл замечания"
+    shellcheck -x "$BACKUP_DIR"/*.sh "$TEST_DIR/run.sh" || fail "shellcheck found issues"
 }
 
-# --- запуск ------------------------------------------------------------------
+# --- run ------------------------------------------------------------------
 
 main() {
     local tests=("$@") t rc failed=0
@@ -872,7 +872,7 @@ main() {
     fi
     for t in "${tests[@]}"; do
         if ! declare -F "$t" >/dev/null; then
-            echo "FAIL $t (нет такого теста)"
+            echo "FAIL $t (no such test)"
             failed=1
             continue
         fi

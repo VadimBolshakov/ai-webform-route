@@ -38,7 +38,7 @@ TITLE_PROMPT = (
 TITLE_INPUT_CHARS = 1000
 TITLE_MAX_CHARS = 200
 TITLE_MAX_TOKENS = 20
-ERROR_SERIES_ALERT = "Серия ошибок OpenRouter: 3 ошибки подряд за 10 минут"
+ERROR_SERIES_ALERT = "OpenRouter error series: 3 errors in a row within 10 minutes"
 MAX_ERROR_TEXT = 500
 MSG_SAVE_FAILED = "Не удалось сохранить ответ"
 
@@ -159,7 +159,7 @@ def spawn(state, coro: Coroutine) -> asyncio.Task:
     def _done(t: asyncio.Task) -> None:
         state.background_tasks.discard(t)
         if not t.cancelled() and (exc := t.exception()) is not None:
-            # Тип и traceback без текста сообщений (у движка hide_parameters=True).
+            # Type and traceback without message texts (the engine has hide_parameters=True).
             logger.error("background task failed: %s", type(exc).__name__, exc_info=exc)
 
     task.add_done_callback(_done)
@@ -204,7 +204,7 @@ class Turn:
     chat_id: int
     model: str
     messages: list[dict]
-    before: Decimal  # потрачено за месяц до запроса
+    before: Decimal  # spent this month before the request
     limit: Decimal
     first_reply: bool
     first_user_text: str
@@ -284,7 +284,7 @@ async def _persist_quietly(state, coro: Coroutine) -> None:
     try:
         await shielded(state, coro)
     except Exception:
-        logger.error("chat outcome not persisted")  # traceback логирует spawn()
+        logger.error("chat outcome not persisted")  # traceback is logged by spawn()
 
 
 async def stream_reply(
@@ -325,7 +325,7 @@ async def stream_reply(
             failure = exc
             gen_id = exc.generation_id or gen_id
     except (asyncio.CancelledError, GeneratorExit):
-        # Клиент ушёл: сохраняем то, что успели получить; стоимость дотянет фоновая задача.
+        # The client left: save what we managed to receive; the background job will backfill the cost.
         await _persist_quietly(state, _interrupted(state, factory, turn, parts, done, gen_id, latency()))
         raise
 
@@ -356,7 +356,7 @@ async def stream_reply(
             _finish(state, factory, turn, text=text, done=done, status="ok", latency_ms=latency()),
         )
     except Exception:
-        logger.error("chat reply not persisted")  # traceback логирует spawn()
+        logger.error("chat reply not persisted")  # traceback is logged by spawn()
         yield sse("error", {"message": MSG_SAVE_FAILED, "retry": True})
         return
     state.llm_errors.success()

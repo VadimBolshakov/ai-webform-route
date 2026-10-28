@@ -15,10 +15,10 @@ from fastapi import Request
 from python_multipart.multipart import MultipartParser, parse_options_header
 
 MAX_FIELDS = 20
-MAX_FIELD_BYTES = 32_000 * 4  # 32000 символов UTF-8
-MAX_HEADER_BYTES = 8 * 1024  # на часть, суммарно
-MAX_HEADERS = 16  # на часть
-BODY_SLACK = 256 * 1024  # границы, заголовки частей
+MAX_FIELD_BYTES = 32_000 * 4  # 32000 UTF-8 characters
+MAX_HEADER_BYTES = 8 * 1024  # per part, in total
+MAX_HEADERS = 16  # per part
+BODY_SLACK = 256 * 1024  # boundaries, part headers
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _CONTROL_ALL = re.compile(r"[\x00-\x1f\x7f]")
@@ -56,13 +56,13 @@ class UploadedFile:
 class ParsedForm:
     fields: dict[str, str] = field(default_factory=dict)
     files: list[UploadedFile] = field(default_factory=list)
-    error: str | None = None  # первая ошибка лимитов (по-русски)
+    error: str | None = None  # first limit error (in Russian)
 
 
 @dataclass
 class _Part:
     name: str = ""
-    filename: str | None = None  # None — обычное поле
+    filename: str | None = None  # None - a regular field
     raw_filename_empty: bool = False
     counted: bool = False
     buf: bytearray = field(default_factory=bytearray)
@@ -134,7 +134,7 @@ class _Collector:
             part.filename = clean_name(raw)
             part.raw_filename_empty = not raw.strip()
             if not part.raw_filename_empty:
-                self._count_file()  # лишние файлы отбрасываются сразу, без буферизации
+                self._count_file()  # extra files are dropped immediately, without buffering
         else:
             self.n_fields += 1
             if self.n_fields > MAX_FIELDS:
@@ -144,7 +144,7 @@ class _Collector:
     def on_part_data(self, data: bytes, start: int, end: int) -> None:
         part = self.part
         if part.filename is not None and not part.counted and end > start:
-            self._count_file()  # файл без имени, но с данными
+            self._count_file()  # a file without a name but with data
         if part.dropped:
             return
         part.buf += data[start:end]
@@ -166,7 +166,7 @@ class _Collector:
             self.form.fields.setdefault(part.name, part.buf.decode("utf-8", "replace"))
             return
         if part.raw_filename_empty and not part.buf:
-            return  # пустое поле выбора файла
+            return  # empty file-picker field
         self.form.files.append(UploadedFile(part.filename, bytes(part.buf)))
 
     def callbacks(self) -> dict:

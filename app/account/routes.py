@@ -88,7 +88,7 @@ async def twofa_page(
     db: AsyncSession = Depends(get_db),
 ):
     user = ctx.user
-    # Секрет не пересоздаётся при каждой загрузке: только если его ещё нет.
+    # The secret is not regenerated on every load: only if it does not exist yet.
     if not user.totp_enabled and not user.totp_secret_enc:
         user.totp_secret_enc = encrypt(new_totp_secret(), request.app.state.settings.fernet_key)
         user.totp_last_step = None
@@ -127,7 +127,7 @@ async def twofa_enable(
         return await _page(request, db, ctx, user, "Неверный код", 400)
     user.totp_enabled = True
     ip = client_ip(request)
-    # Остальные сессии могли быть открыты без второго фактора — отзываем; текущей — новый ID.
+    # Other sessions may have been opened without the second factor - revoke them; the current one gets a new ID.
     await revoke_all(db, user.id, except_id=ctx.session.id)
     raw, _ = await create_session(db, user, ip, request.headers.get("user-agent", ""))
     await revoke(db, ctx.session)
@@ -157,7 +157,7 @@ async def twofa_disable(
     pw_ok = len(password) <= MAX_LENGTH and await asyncio.to_thread(
         verify_password, user.password_hash, password
     )
-    # Код (и его шаг) расходуем только при верном пароле.
+    # The code (and its step) is consumed only with a correct password.
     code_ok = pw_ok and len(code) <= MAX_CODE and await consume_totp(db, user, code, request.app.state.settings.fernet_key)
     if not (pw_ok and code_ok):
         await audit(db, "totp_disable_fail", user, ip)
@@ -178,7 +178,7 @@ async def twofa_disable(
     return RedirectResponse("/app/settings/2fa", status_code=303)
 
 
-# --- настройки ------------------------------------------------------------------------------
+# --- settings ------------------------------------------------------------------------------
 
 MAX_FORM_BYTES = 64 * 1024
 UA_SHOWN = 120
@@ -191,7 +191,7 @@ MSG_WRONG_PASSWORD = "Неверный пароль"
 
 
 async def _form(request: Request, ctx: AuthContext, *, body: bool = True) -> dict[str, str]:
-    """Небольшая urlencoded-форма с ограничением размера + проверка CSRF."""
+    """Small urlencoded form with a size limit + CSRF check."""
     header = request.headers.get("x-csrf-token")
     if header and not body:
         verify_csrf(header, ctx.session)
@@ -200,7 +200,7 @@ async def _form(request: Request, ctx: AuthContext, *, body: bool = True) -> dic
         fields = await parse_urlencoded(request, max_bytes=MAX_FORM_BYTES)
     except UnsupportedForm:
         if not body:
-            verify_csrf(None, ctx.session)  # без токена — 403, а не 415
+            verify_csrf(None, ctx.session)  # no token -> 403, not 415
         raise HTTPException(status_code=415) from None
     except BodyTooLarge:
         raise HTTPException(status_code=413) from None
@@ -314,7 +314,7 @@ async def _password_failure(
     section: str,
     exc: Exception,
 ):
-    """Общая реакция на AccountLocked/WrongPassword: при блокировке сессия отзывается."""
+    """Shared reaction to AccountLocked/WrongPassword: on lockout the session is revoked."""
     if isinstance(exc, WrongPassword) and exc.locked:
         await revoke(db, ctx.session)
         await audit(db, "login_fail", ctx.user, client_ip(request), reason=section)
@@ -355,7 +355,7 @@ async def change_password(
         user.locked_until = None
     await revoke_all(db, user.id, except_id=ctx.session.id)
     raw, _ = await create_session(db, user, ip, request.headers.get("user-agent", ""))
-    await revoke(db, ctx.session)  # ротация ID текущей сессии
+    await revoke(db, ctx.session)  # rotate the ID of the current session
     await audit(db, "password_changed", user, ip)
     await db.commit()
     resp = RedirectResponse("/app/settings?saved=password", status_code=303)

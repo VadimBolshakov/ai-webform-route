@@ -97,11 +97,11 @@ async def notify_thresholds(
     if before < limit * WARN_RATIO <= after:
         await _alert(
             notifier,
-            f"{user.username}: израсходовано 80% лимита (${after:.2f} из ${limit:.2f})",
+            f"{user.username}: 80% of the limit used (${after:.2f} of ${limit:.2f})",
         )
     if before < limit <= after:
         await _alert(
             notifier,
-            f"{user.username}: израсходовано 100% лимита (${after:.2f} из ${limit:.2f})",
+            f"{user.username}: 100% of the limit used (${after:.2f} of ${limit:.2f})",
         )
         await audit(db, "limit_reached", user, ip, spend=str(after), limit=str(limit))

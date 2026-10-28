@@ -9,7 +9,7 @@ LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 class Settings(BaseSettings):
-    # Пустые значения в .env (например, TITLE_MODEL=) означают «по умолчанию».
+    # Empty values in .env (e.g. TITLE_MODEL=) mean "use the default".
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     database_url: str
@@ -31,20 +31,20 @@ class Settings(BaseSettings):
     @field_validator("base_url")
     @classmethod
     def _check_base_url(cls, value: str) -> str:
-        """Только origin: https (http — лишь для localhost), без пути, query и фрагмента."""
+        """Origin only: https (http only for localhost), no path, query or fragment."""
         parts = urlsplit(value)
         try:
-            _ = parts.port  # порт вне 0..65535 или не число -> ValueError
+            _ = parts.port  # port outside 0..65535 or not a number -> ValueError
         except ValueError:
-            raise ValueError("BASE_URL: некорректный порт") from None
+            raise ValueError("BASE_URL: invalid port") from None
         if parts.username is not None or parts.password is not None:
-            raise ValueError("BASE_URL: без логина и пароля в адресе")
+            raise ValueError("BASE_URL: no username or password in the address")
         if parts.scheme not in ("https", "http") or not parts.hostname:
-            raise ValueError("BASE_URL: нужен абсолютный URL вида https://host[:port]")
+            raise ValueError("BASE_URL: an absolute URL like https://host[:port] is required")
         if parts.scheme == "http" and parts.hostname not in LOCAL_HOSTS:
-            raise ValueError("BASE_URL: http допустим только для localhost")
+            raise ValueError("BASE_URL: http is allowed only for localhost")
         if parts.path not in ("", "/") or parts.query or parts.fragment or "?" in value or "#" in value:
-            raise ValueError("BASE_URL: без пути, параметров и фрагмента")
+            raise ValueError("BASE_URL: no path, parameters or fragment")
         return value.rstrip("/")
 
 

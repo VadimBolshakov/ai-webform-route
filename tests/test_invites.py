@@ -87,7 +87,7 @@ async def test_redeem_invite_creates_user_and_logs_in(client, db, settings, noti
     assert inv.used_by_id == u.id and inv.used_at is not None
     events = (await db.execute(select(AuditLog.event))).scalars().all()
     assert "invite_redeemed" in events
-    assert notifier.sent == ["Новый пользователь: newbie"]
+    assert notifier.sent == ["New user: newbie"]
 
 
 async def test_invite_single_use(client, db, settings):
@@ -122,7 +122,7 @@ async def test_invite_requires_policy_acceptance(client, db, settings):
     r = await client.post(f"{BASE}/join/{raw}", data=form(accepted=""))
     assert r.status_code == 400 and "политику" in r.text
     assert (await db.execute(select(User).where(User.username == "newbie"))).first() is None
-    assert (await client.get(f"{BASE}/join/{raw}")).status_code == 200  # инвайт не сгорел
+    assert (await client.get(f"{BASE}/join/{raw}")).status_code == 200  # the invite was not consumed
 
 
 async def test_invite_weak_password_rejected(client, db, settings):
@@ -170,7 +170,7 @@ async def test_only_hash_stored(db, settings):
 async def test_join_page_referrer_same_origin_and_private_headers(client, db, settings):
     raw, _ = await new_invite(db, settings)
     r = await client.get(f"{BASE}/join/{raw}")
-    # same-origin: токен инвайта не уходит в Referer на чужие сайты.
+    # same-origin: the invite token does not leak in the Referer to other sites.
     assert r.headers["referrer-policy"] == "same-origin"
     assert r.headers["cache-control"] == "no-store"
     assert f'href="{BASE}/privacy"' in r.text

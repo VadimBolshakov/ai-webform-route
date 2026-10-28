@@ -33,13 +33,13 @@ async def test_cleanup_expired(db):
     ])
     long_ago = now - timedelta(days=31)
     db.add_all([
-        AuditLog(event="login_fail", user_id=None, details={}, created_at=long_ago),  # удалить
-        AuditLog(event="login_fail", user_id=None, details={}, created_at=now),  # свежая
+        AuditLog(event="login_fail", user_id=None, details={}, created_at=long_ago),  # delete
+        AuditLog(event="login_fail", user_id=None, details={}, created_at=now),  # fresh
         AuditLog(event="login_fail", user_id=u.id, user_label="alice", details={}, created_at=long_ago),
         AuditLog(event="user_blocked", user_id=None, details={}, created_at=long_ago),
-        AuditLog(event="limit_reached", user_id=None, details={"scope": "login"}, created_at=long_ago),  # удалить
+        AuditLog(event="limit_reached", user_id=None, details={"scope": "login"}, created_at=long_ago),  # delete
         AuditLog(event="limit_reached", user_id=None, details={"scope": "login"}, created_at=now),
-        AuditLog(event="limit_reached", user_id=u.id, details={}, created_at=long_ago),  # месячный лимит
+        AuditLog(event="limit_reached", user_id=u.id, details={}, created_at=long_ago),  # monthly limit
     ])
     await db.commit()
     res = await cleanup_expired(shared(db))
@@ -71,7 +71,7 @@ def usage(user, gid, cost=None, age=timedelta(minutes=10)) -> Usage:
 
 
 async def test_backfill_costs(db):
-    u = await make_user(db, "alice")  # лимит $5
+    u = await make_user(db, "alice")  # limit $5
     other = await make_user(db, "bob")
     rows = {
         "ok": usage(u, "g-ok"),
@@ -83,7 +83,7 @@ async def test_backfill_costs(db):
         "nogen": usage(u, None),
         "old": usage(u, "g-old", age=timedelta(days=2)),
     }
-    # до обновления у alice уже 4.0 -> 80% порог пересечётся (4.0 + 0.5 + 0.2 + ... )
+    # before the update alice already has 4.0 -> the 80% threshold will be crossed (4.0 + 0.5 + 0.2 + ... )
     rows["has"].cost_usd = Decimal("3.5")
     db.add_all(rows.values())
     await db.commit()
@@ -105,9 +105,9 @@ async def test_backfill_costs(db):
     assert rows["llmerr"].cost_usd is None and rows["nogen"].cost_usd is None
     assert rows["old"].cost_usd is None
     assert sorted(llm.calls) == ["g-bob", "g-boom", "g-llm", "g-none", "g-ok"]
-    # alice: 3.5 -> 4.1 пересекает 80% от $5
+    # alice: 3.5 -> 4.1 crosses 80% of $5
     assert len(notifier.sent) == 1 and "80%" in notifier.sent[0] and "alice" in notifier.sent[0]
-    # повторный запуск не дёргает уже заполненные
+    # a repeated run does not touch the already filled ones
     llm.calls.clear()
     assert await backfill_costs(shared(db), llm, notifier) == 0
     assert "g-ok" not in llm.calls

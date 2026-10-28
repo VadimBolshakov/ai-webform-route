@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""Откат версионированного S3-бакета (репозиторий restic) на момент времени.
+"""Roll a versioned S3 bucket (restic repository) back to a point in time.
 
-Запускать владельцу со своего компьютера, учётной записью владельца (не ключом сервера):
+Run by the owner from their own computer, with the owner's account (not the server key):
     python undelete.py --bucket B [--prefix aichat/] --as-of "2026-11-02T10:00:00Z" [--apply]
 
-Без --apply печатается только план. Состояние ключа на момент as_of — самый свежий элемент
-(версия объекта или delete marker) с LastModified <= as_of:
-  версия объекта -> восстановить (если текущая версия не совпадает с ней по ETag и размеру),
-  delete marker или ничего -> ключа не было.
-Поэтому повторный запуск после --apply показывает, что делать больше нечего.
-Lifecycle бакета удаляет старые версии через 30 дней: более ранний as_of — только с --force-old.
-Коды выхода: 0 — успех, 2 — отказ (нет версионирования / нет прав / as_of старше 30 дней),
-1 — прочие ошибки.
-Зависимость: boto3 (только у владельца; приложение его не использует).
+Without --apply only the plan is printed. The state of a key at as_of is the most recent item
+(object version or delete marker) with LastModified <= as_of:
+  object version -> restore (if the current version differs from it by ETag and size),
+  delete marker or nothing -> the key did not exist.
+So a repeated run after --apply shows that there is nothing left to do.
+The bucket lifecycle deletes old versions after 30 days: an earlier as_of only with --force-old.
+Exit codes: 0 - success, 2 - refusal (no versioning / no permissions / as_of older than 30 days),
+1 - other errors.
+Dependency: boto3 (owner side only; the application does not use it).
 """
 
 import argparse
 import sys
 from datetime import UTC, datetime, timedelta
 
-# Размер страницы list_object_versions (подменяется в тестах).
+# Page size of list_object_versions (overridden in tests).
 PAGE_SIZE = 1000
 
-# Некактуальные версии lifecycle удаляет через столько дней (aws/lifecycle.json).
+# The lifecycle deletes noncurrent versions after this many days (aws/lifecycle.json).
 RETENTION_DAYS = 30
 
-# Сколько обработанных ключей перечислять в сообщении об ошибке --apply.
+# How many processed keys to list in the --apply error message.
 DONE_KEYS_SHOWN = 20
 
 # Action = (kind: "restore" | "delete" | "keep", key, version_id | None)
@@ -33,7 +33,7 @@ Action = tuple[str, str, str | None]
 
 
 class Refusal(Exception):
-    """Отказ работать (код выхода 2)."""
+    """Refusal to proceed (exit code 2)."""
 
 
 def parse_as_of(value: str) -> datetime:
@@ -41,13 +41,13 @@ def parse_as_of(value: str) -> datetime:
         dt = datetime.fromisoformat(value.strip())
     except ValueError:
         raise ValueError(
-            f"Не удалось разобрать время «{value}»: нужен формат ISO 8601, "
-            "например 2026-11-02T10:00:00Z"
+            f"Could not parse the time '{value}': ISO 8601 format is required, "
+            "for example 2026-11-02T10:00:00Z"
         ) from None
     if dt.tzinfo is None:
         raise ValueError(
-            f"В времени «{value}» не указан часовой пояс: добавьте Z (UTC) или смещение, "
-            "например 2026-11-02T10:00:00Z или 2026-11-02T12:00:00+02:00"
+            f"The time '{value}' has no timezone: add Z (UTC) or an offset, "
+            "for example 2026-11-02T10:00:00Z or 2026-11-02T12:00:00+02:00"
         )
     return dt.astimezone(UTC)
 
@@ -62,17 +62,17 @@ def check_versioning(s3, bucket: str) -> None:
     except Exception as exc:
         if _error_code(exc) == "AccessDenied":
             raise Refusal(
-                "Нет прав на чтение версий: запустите с учётной записью владельца, "
-                "не ключом сервера"
+                "No permission to read versions: run with the owner's account, "
+                "not the server key"
             ) from exc
         raise
     if status != "Enabled":
-        raise Refusal("Версионирование бакета не включено — откат невозможно")
+        raise Refusal("Bucket versioning is not enabled - rollback is impossible")
 
 
 def _iter_entries(s3, bucket: str, prefix: str):
-    """Все версии и delete markers под prefix:
-    (key, is_marker, last_modified, is_latest, vid, pos, etag, size); у markers etag и size — None."""
+    """All versions and delete markers under prefix:
+    (key, is_marker, last_modified, is_latest, vid, pos, etag, size); for markers etag and size are None."""
     pos = 0
     kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": PAGE_SIZE}
     while True:
@@ -81,8 +81,8 @@ def _iter_entries(s3, bucket: str, prefix: str):
         except Exception as exc:
             if _error_code(exc) == "AccessDenied":
                 raise Refusal(
-                    "Нет прав на чтение версий: запустите с учётной записью владельца, "
-                    "не ключом сервера"
+                    "No permission to read versions: run with the owner's account, "
+                    "not the server key"
                 ) from exc
             raise
         for is_marker, items in (
@@ -112,7 +112,7 @@ def _iter_entries(s3, bucket: str, prefix: str):
 
 def plan_restore(s3, bucket: str, prefix: str, as_of: datetime) -> list[Action]:
     if as_of.tzinfo is None:
-        raise ValueError("as_of должен содержать часовой пояс")
+        raise ValueError("as_of must contain a timezone")
     by_key: dict[str, list[tuple]] = {}
     for entry in _iter_entries(s3, bucket, prefix):
         by_key.setdefault(entry[0], []).append(entry)
@@ -121,17 +121,17 @@ def plan_restore(s3, bucket: str, prefix: str, as_of: datetime) -> list[Action]:
     for key in sorted(by_key):
         entries = by_key[key]
         current = next((e for e in entries if e[3] and not e[1]), None)
-        # При равных LastModified (секундная точность) новее текущая версия, затем та, что
-        # раньше в ответе S3 (он отдаёт новые первыми); версии и markers приходят раздельно.
+        # With equal LastModified (one-second precision) the current version is newer, then the one that
+        # comes earlier in the S3 response (it returns newest first); versions and markers arrive separately.
         at_as_of = [e for e in entries if e[2] <= as_of]
         target = max(at_as_of, key=lambda e: (e[2], e[3], -e[5]), default=None)
         if target is None or target[1]:
-            # На момент as_of ключа не было (не существовал или был удалён).
+            # At as_of the key did not exist (never existed or was deleted).
             actions.append(("delete", key, None) if current else ("keep", key, None))
         elif target[3] or (
             current is not None and (current[6], current[7]) == (target[6], target[7])
         ):
-            # Целевая версия текущая или текущая — её копия (например, после --apply).
+            # The target version is the current one, or the current one is a copy of it (e.g. after --apply).
             actions.append(("keep", key, target[4]))
         else:
             actions.append(("restore", key, target[4]))
@@ -139,7 +139,7 @@ def plan_restore(s3, bucket: str, prefix: str, as_of: datetime) -> list[Action]:
 
 
 class ApplyError(Exception):
-    """Ошибка посреди --apply: какие ключи уже обработаны."""
+    """Error in the middle of --apply: which keys are already processed."""
 
     def __init__(self, key: str, done: list[str], total: int, cause: Exception):
         super().__init__(str(cause))
@@ -147,19 +147,19 @@ class ApplyError(Exception):
 
     def __str__(self) -> str:
         lines = [
-            f"ключ {self.key}: {self.cause}",
-            f"Выполнено {len(self.done)} из {self.total} действий до ошибки.",
+            f"key {self.key}: {self.cause}",
+            f"Done {len(self.done)} of {self.total} actions before the error.",
         ]
         if self.done:
             shown = ", ".join(self.done[:DONE_KEYS_SHOWN])
             rest = len(self.done) - DONE_KEYS_SHOWN
-            lines.append("Уже обработаны: " + shown + (f" и ещё {rest}" if rest > 0 else ""))
-        lines.append("Запустите ту же команду снова: обработанные ключи будут «без изменений».")
+            lines.append("Already processed: " + shown + (f" and {rest} more" if rest > 0 else ""))
+        lines.append("Run the same command again: processed keys will show as 'unchanged'.")
         return "\n".join(lines)
 
 
 def apply_actions(s3, bucket: str, actions: list[Action], progress=None) -> None:
-    """Выполняет restore/delete; progress(line) вызывается после каждого ключа."""
+    """Performs restore/delete; progress(line) is called after each key."""
     todo = [a for a in actions if a[0] != "keep"]
     done: list[str] = []
     for i, (kind, key, version_id) in enumerate(todo, 1):
@@ -176,14 +176,14 @@ def apply_actions(s3, bucket: str, actions: list[Action], progress=None) -> None
             raise ApplyError(key, done, len(todo), exc) from exc
         done.append(key)
         if progress is not None:
-            label = "восстановлено" if kind == "restore" else "удалено"
+            label = "restored" if kind == "restore" else "deleted"
             progress(f"[{i}/{len(todo)}] {label} {key}")
 
 
 def format_plan(actions: list[Action]) -> str:
-    labels = {"restore": "восстановить", "delete": "удалить", "keep": "без изменений"}
+    labels = {"restore": "restore", "delete": "delete", "keep": "unchanged"}
     width = max([len(a[1]) for a in actions] + [3])
-    lines = [f"{'Действие':<14} {'Ключ':<{width}} Версия"]
+    lines = [f"{'Action':<14} {'Key':<{width}} Version"]
     for kind, key, vid in actions:
         lines.append(f"{labels[kind]:<14} {key:<{width}} {vid or '-'}")
     return "\n".join(lines)
@@ -191,7 +191,7 @@ def format_plan(actions: list[Action]) -> str:
 
 def summary(actions: list[Action]) -> str:
     n = {k: sum(1 for a in actions if a[0] == k) for k in ("restore", "delete", "keep")}
-    return f"восстановить {n['restore']}, удалить {n['delete']}, без изменений {n['keep']}"
+    return f"restore {n['restore']}, delete {n['delete']}, unchanged {n['keep']}"
 
 
 def make_client(profile: str | None, region: str):
@@ -201,23 +201,23 @@ def make_client(profile: str | None, region: str):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Откат S3-бакета с версионированием на момент времени.")
-    p.add_argument("--bucket", required=True, help="имя бакета")
-    p.add_argument("--prefix", default="aichat/", help="префикс ключей (по умолчанию aichat/)")
+    p = argparse.ArgumentParser(description="Roll a versioned S3 bucket back to a point in time.")
+    p.add_argument("--bucket", required=True, help="bucket name")
+    p.add_argument("--prefix", default="aichat/", help="key prefix (default aichat/)")
     p.add_argument(
         "--as-of",
         required=True,
         dest="as_of",
-        help='момент отката, ISO 8601 с поясом: "2026-11-02T10:00:00Z"',
+        help='rollback moment, ISO 8601 with a timezone: "2026-11-02T10:00:00Z"',
     )
-    p.add_argument("--apply", action="store_true", help="выполнить откат (без флага — только план)")
+    p.add_argument("--apply", action="store_true", help="perform the rollback (without the flag - plan only)")
     p.add_argument(
         "--force-old",
         action="store_true",
         dest="force_old",
-        help=f"разрешить as_of старше {RETENTION_DAYS} дней (версии могли быть уже удалены)",
+        help=f"allow as_of older than {RETENTION_DAYS} days (versions may already be deleted)",
     )
-    p.add_argument("--profile", default=None, help="профиль AWS CLI владельца")
+    p.add_argument("--profile", default=None, help="owner's AWS CLI profile")
     p.add_argument("--region", default="eu-central-1")
     return p
 
@@ -227,41 +227,41 @@ def main(argv: list[str] | None = None) -> int:
     try:
         as_of = parse_as_of(args.as_of)
     except ValueError as exc:
-        print(f"Ошибка: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
     if as_of < datetime.now(UTC) - timedelta(days=RETENTION_DAYS) and not args.force_old:
         print(
-            f"Ошибка: момент {as_of.astimezone(UTC):%Y-%m-%d %H:%M:%S} UTC старше {RETENTION_DAYS} дней. "
-            f"Lifecycle бакета удаляет старые версии через {RETENTION_DAYS} дней, поэтому "
-            "состояние на этот момент восстановится не полностью. Если вы понимаете это, "
-            "добавьте --force-old.",
+            f"Error: the moment {as_of.astimezone(UTC):%Y-%m-%d %H:%M:%S} UTC is older than {RETENTION_DAYS} days. "
+            f"The bucket lifecycle deletes old versions after {RETENTION_DAYS} days, so "
+            "the state at that moment will not be fully restored. If you understand this, "
+            "add --force-old.",
             file=sys.stderr,
         )
         return 2
     if not args.prefix:
-        print("Внимание: префикс пуст — откатывается весь бакет.", file=sys.stderr)
+        print("Warning: the prefix is empty - the whole bucket will be rolled back.", file=sys.stderr)
     elif not args.prefix.endswith("/"):
         print(
-            f"Внимание: префикс «{args.prefix}» не заканчивается на «/» — будут затронуты и "
-            f"ключи вроде «{args.prefix}-old/…». Обычно нужен «{args.prefix}/».",
+            f"Warning: the prefix '{args.prefix}' does not end with '/' - keys like "
+            f"'{args.prefix}-old/...' will be affected too. Usually '{args.prefix}/' is intended.",
             file=sys.stderr,
         )
     try:
         s3 = make_client(args.profile, args.region)
         check_versioning(s3, args.bucket)
         actions = plan_restore(s3, args.bucket, args.prefix, as_of)
-        print(format_plan(actions) if actions else "Объектов под этим префиксом нет.")
+        print(format_plan(actions) if actions else "No objects under this prefix.")
         print(summary(actions))
         if args.apply:
             apply_actions(s3, args.bucket, actions, progress=lambda line: print(line, flush=True))
-            print("Откат выполнен.")
+            print("Rollback done.")
         else:
-            print("Это только план. Для выполнения добавьте --apply.")
+            print("This is only a plan. Add --apply to execute it.")
     except Refusal as exc:
-        print(f"Ошибка: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
-        print(f"Ошибка: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
     return 0
 

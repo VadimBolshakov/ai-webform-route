@@ -1,4 +1,4 @@
-"""Откат бакета на момент времени (ops/backup/aws/undelete.py) на moto, без Docker."""
+"""Bucket rollback to a point in time (ops/backup/aws/undelete.py) on moto, without Docker."""
 
 import importlib.util
 import json
@@ -36,7 +36,7 @@ def s3(monkeypatch):
 
 
 def _tick() -> datetime:
-    """Момент между «до» и «после»: LastModified в S3 с точностью до секунды."""
+    """A moment between "before" and "after": LastModified in S3 has one-second precision."""
     time.sleep(1.1)
     t = datetime.now(UTC)
     time.sleep(1.1)
@@ -52,7 +52,7 @@ def _kinds(actions):
 
 
 def _recent() -> str:
-    """Время в пределах 30-дневного окна (ISO 8601, UTC)."""
+    """A time within the 30-day window (ISO 8601, UTC)."""
     return (datetime.now(UTC) - timedelta(days=1)).isoformat()
 
 
@@ -108,7 +108,7 @@ def test_already_deleted_at_as_of_is_kept(s3):
 
 def test_deleted_at_as_of_but_recreated_later_is_deleted(s3):
     s3.put_object(Bucket=BUCKET, Key="aichat/k", Body=b"x")
-    time.sleep(1.1)  # версия и marker в разные секунды
+    time.sleep(1.1)  # version and marker in different seconds
     s3.delete_object(Bucket=BUCKET, Key="aichat/k")
     as_of = _tick()
     s3.put_object(Bucket=BUCKET, Key="aichat/k", Body=b"y")
@@ -152,7 +152,7 @@ def test_undelete_refuses_without_versioning(monkeypatch, capsys):
         )
         code = undelete.main(["--bucket", "plain", "--as-of", _recent()])
     assert code == 2
-    assert "Версионирование бакета не включено — откат невозможно" in capsys.readouterr().err
+    assert "Bucket versioning is not enabled - rollback is impossible" in capsys.readouterr().err
 
 
 def test_access_denied_exits_2(s3, monkeypatch, capsys):
@@ -170,13 +170,13 @@ def test_access_denied_exits_2(s3, monkeypatch, capsys):
     monkeypatch.setattr(undelete, "make_client", lambda profile, region: Denying())
     code = undelete.main(["--bucket", BUCKET, "--as-of", _recent()])
     assert code == 2
-    assert "Нет прав на чтение версий" in capsys.readouterr().err
+    assert "No permission to read versions" in capsys.readouterr().err
 
 
 def test_naive_as_of_rejected(s3, capsys):
     code = undelete.main(["--bucket", BUCKET, "--as-of", "2026-01-01T00:00:00"])
     assert code == 1
-    assert "часовой пояс" in capsys.readouterr().err
+    assert "timezone" in capsys.readouterr().err
 
 
 def test_dry_run_changes_nothing(s3, capsys):
@@ -190,7 +190,7 @@ def test_dry_run_changes_nothing(s3, capsys):
     code = undelete.main(["--bucket", BUCKET, "--prefix", "aichat/", "--as-of", as_of.isoformat()])
     out = capsys.readouterr().out
     assert code == 0
-    assert "восстановить 1, удалить 1, без изменений 1" in out
+    assert "restore 1, delete 1, unchanged 1" in out
     assert "aichat/a" in out and "aichat/c" in out
     after = s3.list_object_versions(Bucket=BUCKET)
     assert len(before["Versions"]) == len(after["Versions"])
@@ -220,14 +220,14 @@ def test_dry_run_after_apply_shows_nothing_to_do(s3, capsys):
     capsys.readouterr()
 
     assert undelete.main(args) == 0
-    assert "восстановить 0, удалить 0, без изменений 3" in capsys.readouterr().out
+    assert "restore 0, delete 0, unchanged 3" in capsys.readouterr().out
 
 
 def test_restore_when_current_differs_only_in_content(s3):
-    """keep — только если у текущей версии тот же ETag и размер, что у целевой."""
+    """keep - only if the current version has the same ETag and size as the target one."""
     s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a1")
     as_of = _tick()
-    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a2")  # тот же размер, другой ETag
+    s3.put_object(Bucket=BUCKET, Key="aichat/a", Body=b"a2")  # same size, different ETag
     assert _kinds(undelete.plan_restore(s3, BUCKET, "aichat/", as_of)) == {"aichat/a": "restore"}
 
 
@@ -238,8 +238,8 @@ def test_apply_prints_progress(s3, capsys):
     s3.put_object(Bucket=BUCKET, Key="aichat/c", Body=b"c1")
     assert undelete.main(["--bucket", BUCKET, "--as-of", as_of.isoformat(), "--apply"]) == 0
     out = capsys.readouterr().out
-    assert "[1/2] восстановлено aichat/a" in out
-    assert "[2/2] удалено aichat/c" in out
+    assert "[1/2] restored aichat/a" in out
+    assert "[2/2] deleted aichat/c" in out
 
 
 def test_apply_error_reports_done_keys(s3, monkeypatch, capsys):
@@ -260,9 +260,9 @@ def test_apply_error_reports_done_keys(s3, monkeypatch, capsys):
     code = undelete.main(["--bucket", BUCKET, "--as-of", as_of.isoformat(), "--apply"])
     captured = capsys.readouterr()
     assert code == 1
-    assert "[1/3] восстановлено aichat/a" in captured.out
+    assert "[1/3] restored aichat/a" in captured.out
     assert "aichat/b" in captured.err and "boom" in captured.err
-    assert "Выполнено 1 из 3" in captured.err
+    assert "Done 1 of 3" in captured.err
     assert "aichat/a" in captured.err
     assert _live_keys(s3) == ["aichat/a"]
 
@@ -271,7 +271,7 @@ def test_as_of_older_than_30_days_refused(s3, capsys):
     old = (datetime.now(UTC) - timedelta(days=31)).isoformat()
     code = undelete.main(["--bucket", BUCKET, "--as-of", old])
     assert code == 2
-    assert "30 дней" in capsys.readouterr().err
+    assert "30 days" in capsys.readouterr().err
 
 
 def test_as_of_older_than_30_days_with_force_old(s3, capsys):
@@ -279,7 +279,7 @@ def test_as_of_older_than_30_days_with_force_old(s3, capsys):
     old = (datetime.now(UTC) - timedelta(days=31)).isoformat()
     code = undelete.main(["--bucket", BUCKET, "--as-of", old, "--force-old"])
     assert code == 0
-    assert "удалить 1" in capsys.readouterr().out
+    assert "delete 1" in capsys.readouterr().out
 
 
 def test_default_prefix_is_aichat(s3, capsys):
@@ -296,7 +296,7 @@ def test_default_prefix_is_aichat(s3, capsys):
 def test_prefix_without_slash_warns(s3, capsys, prefix):
     code = undelete.main(["--bucket", BUCKET, "--prefix", prefix, "--as-of", _recent()])
     assert code == 0
-    assert "Внимание: префикс" in capsys.readouterr().err
+    assert "Warning: the prefix" in capsys.readouterr().err
 
 
 def _as_list(v):
@@ -364,5 +364,5 @@ def test_apply_error_caps_done_keys_list():
     err = undelete.ApplyError("k", [f"aichat/k{i}" for i in range(25)], 30, RuntimeError("boom"))
     text = str(err)
     assert "aichat/k19" in text and "aichat/k20" not in text
-    assert "и ещё 5" in text
-    assert "Выполнено 25 из 30" in text
+    assert "and 5 more" in text
+    assert "Done 25 of 30" in text

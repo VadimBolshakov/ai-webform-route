@@ -101,7 +101,7 @@ async def test_lockout_after_5_failures(client, db, notifier):
         assert (await login(client, password="bad-bad-bad-bad")).status_code == 401
     user = (await db.execute(select(User))).scalar_one()
     assert user.failed_logins == 5 and user.locked_until > datetime.now(timezone.utc)
-    r = await login(client)  # верный пароль, но аккаунт заблокирован
+    r = await login(client)  # correct password, but the account is locked
     assert r.status_code == 401 and COOKIE_NAME not in r.headers.get("set-cookie", "")
     assert len(notifier.sent) == 1
     assert "alice" in notifier.sent[0] and PASSWORD not in notifier.sent[0]
@@ -151,7 +151,7 @@ async def test_ip_rate_limit(client, db, app):
     await make_user(db)
     for _ in range(20):
         await login(client, password="bad-bad-bad-bad")
-    r = await login(client)  # 21-я попытка с IP, даже с верным паролем
+    r = await login(client)  # 21st attempt from the IP, even with the correct password
     assert r.status_code == 429 and "Неверный логин или пароль" in r.text
     events = (await db.execute(select(AuditLog.event))).scalars().all()
     assert "limit_reached" in events
@@ -215,10 +215,10 @@ async def test_old_cookie_ignored_and_revoked_on_new_login(client, db):
     new_raw = r.cookies[COOKIE_NAME]
     assert new_raw != "attacker-chosen-value" and new_raw != old_raw
     client.cookies.set(COOKIE_NAME, old_raw)
-    assert await get_session(db, old_raw) is not None  # чужая валидная cookie не отозвана
+    assert await get_session(db, old_raw) is not None  # someone else's valid cookie is not revoked
 
     client.cookies.set(COOKIE_NAME, old_raw)
-    r = await login(client)  # вход с валидной старой cookie отзывает её
+    r = await login(client)  # logging in with a valid old cookie revokes it
     assert await get_session(db, old_raw) is None
 
 
@@ -303,7 +303,7 @@ async def test_require_admin_non_admin_404(app, client, db):
 
 async def test_405_on_private_paths_is_neutral_404(client):
     ref = await client.get("/nonexistent")
-    r = await client.get("/app/logout")  # маршрут только POST
+    r = await client.get("/app/logout")  # POST-only route
     assert r.status_code == 404 and r.content == ref.content
     assert r.headers["x-robots-tag"] == "noindex, nofollow"
     r = await client.put(LOGIN)
@@ -336,7 +336,7 @@ async def test_touch_commits_when_extending(db, monkeypatch):
     monkeypatch.setattr(db, "commit", spy)
     await touch(db, s)
     assert calls == [1]
-    await touch(db, s)  # слишком рано - без записи
+    await touch(db, s)  # too early - no write
     assert calls == [1]
 
 
@@ -352,7 +352,7 @@ async def test_sliding_expiry_persisted_on_read_request(app, client, db):
     await db.commit()
     sid = s.id
     assert (await client.get("/app/probe")).status_code == 200
-    await db.rollback()  # то, что не закоммичено, пропадает
+    await db.rollback()  # whatever is not committed disappears
     db.expunge_all()
     fresh = await db.get(AuthSession, sid)
     assert fresh.expires_at > datetime.now(timezone.utc) + timedelta(days=6)

@@ -1,4 +1,4 @@
-"""Регресс: commit() в одном тесте не должен протекать в другие."""
+"""Regression: commit() in one test must not leak into others."""
 from sqlalchemy import select
 
 from app.models import User

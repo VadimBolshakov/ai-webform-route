@@ -15,7 +15,7 @@ class Base(DeclarativeBase):
 
 
 def make_engine(database_url: str) -> AsyncEngine:
-    # hide_parameters: тексты сообщений не попадают в сообщения об ошибках и логи.
+    # hide_parameters: message texts do not end up in error messages and logs.
     return create_async_engine(database_url, pool_pre_ping=True, hide_parameters=True)
 
 
@@ -24,11 +24,11 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
-    """Сессия на запрос; engine создаётся в create_app и хранится в app.state."""
+    """Per-request session; the engine is created in create_app and stored in app.state."""
     async with request.app.state.sessionmaker() as session:
         yield session
 
 
 def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
-    """Фабрика коротких сессий для работы вне жизненного цикла запроса (после стрима, фон)."""
+    """Factory of short sessions for work outside the request lifecycle (after a stream, background)."""
     return request.app.state.sessionmaker

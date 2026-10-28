@@ -57,7 +57,7 @@ async def test_big_body_without_content_length_counted(client, form_spy, ref404)
 
 async def test_small_multipart_rejected_everywhere_but_messages(client, db, form_spy, ref404):
     _, csrf = await signed_in(client, db)
-    form_spy.clear()  # сам вход (urlencoded) форму разбирает
+    form_spy.clear()  # the login itself (urlencoded) parses the form
     r = await client.post(
         "/app/settings/preferences", files={"csrf_token": (None, csrf), "theme": (None, "dark")}
     )
@@ -103,7 +103,7 @@ async def test_messages_endpoint_accepts_large_multipart(app, client, db, monkey
     monkeypatch.setattr(app.state.settings, "context_token_budget", 10_000_000)
     u, csrf = await signed_in(client, db)
     chat = await make_chat(db, u, title="t")
-    big = b"word " * (200 * 1024)  # 1 МБ текста: больше 64 КБ, меньше лимита вложений
+    big = b"word " * (200 * 1024)  # 1 MB of text: more than 64 KB, less than the attachment limit
     r = await send(client, chat.id, csrf, text="hi", files=[("files", ("big.txt", big))])
     assert r.status_code == 200
     assert "error" not in [n for n, _ in events(r.text)]
@@ -112,7 +112,7 @@ async def test_messages_endpoint_accepts_large_multipart(app, client, db, monkey
 
 
 async def test_duplicate_content_type_rejected(client, form_spy, ref404):
-    # Первый заголовок (его читает Starlette) — multipart, последний — безобидный.
+    # The first header (read by Starlette) is multipart, the last one is harmless.
     dup = [
         ("content-type", "multipart/form-data; boundary=x"),
         ("content-type", "text/plain"),

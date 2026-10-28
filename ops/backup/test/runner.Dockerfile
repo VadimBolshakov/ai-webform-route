@@ -1,10 +1,10 @@
-# Образ для тестов скриптов бэкапа: restic закреплённой версии + bash и утилиты.
-# RESTIC_VERSION передаёт compose.yml (значение из ops/backup/RESTIC_VERSION).
+# Image for the backup script tests: pinned restic version + bash and utilities.
+# RESTIC_VERSION is passed by compose.yml (value from ops/backup/RESTIC_VERSION).
 ARG RESTIC_VERSION
 FROM pgsty/mc:RELEASE.2026-09-16T00-00-00Z AS mc
 
 FROM restic/restic:${RESTIC_VERSION}
-# Пакеты из ветки Alpine закреплённого образа restic; точные -rN не фиксируются (Alpine их удаляет).
+# Packages from the Alpine branch of the pinned restic image; exact -rN versions are not pinned (Alpine removes them).
 RUN apk add --no-cache \
         bash~5.3 \
         coreutils~9 \

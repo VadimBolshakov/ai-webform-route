@@ -58,7 +58,7 @@ async def test_admin_page_renders_and_csrf_required(client, db):
         assert needle in r.text
     assert "style=" not in r.text.lower() and " onclick" not in r.text.lower()
     assert r.headers["cache-control"] == "no-store"
-    # без CSRF — 403
+    # no CSRF -> 403
     assert (await client.post(A + "/invites", data={})).status_code == 403
     assert (await client.post(f"{A}/users/{bob.id}/block", data={"csrf_token": "bad"})).status_code == 403
 
@@ -71,7 +71,7 @@ async def test_create_and_revoke_invite(client, db):
     assert r.headers["cache-control"] == "no-store"
     inv = (await db.execute(select(Invite))).scalar_one()
     assert "активен" in (await client.get(A)).text
-    # повторная загрузка страницы ссылку не показывает
+    # reloading the page does not show the link
     assert "/join/" not in (await client.get(A)).text
     r = await post(client, f"/invites/{inv.id}/revoke", csrf)
     assert r.status_code == 303
@@ -153,7 +153,7 @@ async def test_last_activity_shown(client, db):
     admin, _ = await admin_in(client, db)
     bob = await make_user(db, "bob")
     page = (await client.get(A)).text
-    assert "—" in page  # у bob сессий нет
+    assert "—" in page  # bob has no sessions
     _, s = await create_session(db, bob, "1.1.1.1", "UA")
     await db.commit()
     assert s.last_seen.strftime("%d.%m.%Y %H:%M") in (await client.get(A)).text
@@ -174,7 +174,7 @@ async def test_add_model_uses_openrouter_info(client, db):
     m = (await db.execute(select(AllowedModel))).scalar_one()
     assert (m.model_id, m.display_name, m.supports_images, m.enabled) == (
         "vendor/vision-1", "Vision One", True, True)
-    # дубликат
+    # duplicate
     r = await post(client, "/models", csrf, model_id="vendor/vision-1")
     assert r.status_code == 400 and "уже добавлена" in r.text
     # toggle + delete

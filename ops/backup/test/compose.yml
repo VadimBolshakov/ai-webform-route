@@ -1,21 +1,21 @@
-# Тестовый стенд скриптов бэкапа: S3 (MinIO с версионированием), Postgres, фейковый healthchecks, runner.
-# Запуск — через tests/test_ops_backup.py. Вручную (из корня репозитория, Git Bash):
+# Test bench for the backup scripts: S3 (MinIO with versioning), Postgres, fake healthchecks, runner.
+# Run via tests/test_ops_backup.py. Manually (from the repository root, Git Bash):
 #   export RESTIC_VERSION=$(cat ops/backup/RESTIC_VERSION)
 #   docker compose -f ops/backup/test/compose.yml up -d --build --wait
 #   docker compose -f ops/backup/test/compose.yml run --rm runner bash /work/ops/backup/test/run.sh [test_...]
 #   docker compose -f ops/backup/test/compose.yml down -v
-# Все пароли и ключи здесь — тестовые.
-# Имя проекта — для ручного запуска; pytest задаёт уникальное (-p aichat-backup-test-<uuid>).
+# All passwords and keys here are test ones.
+# Project name is for manual runs; pytest sets a unique one (-p aichat-backup-test-<uuid>).
 name: aichat-backup-test
 
 x-runner-build: &runner-build
   context: .
   dockerfile: runner.Dockerfile
   args:
-    RESTIC_VERSION: ${RESTIC_VERSION:?задайте RESTIC_VERSION из ops/backup/RESTIC_VERSION}
+    RESTIC_VERSION: ${RESTIC_VERSION:?set RESTIC_VERSION from ops/backup/RESTIC_VERSION}
 
 services:
-  # Образы minio/minio и minio/mc больше не публикуются; pgsty/* — поддерживаемый сообществом форк MinIO.
+  # The minio/minio and minio/mc images are no longer published; pgsty/* is a community-maintained MinIO fork.
   minio:
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     command: ["server", "/data"]
@@ -35,7 +35,7 @@ services:
         condition: service_healthy
     environment:
       MC_HOST_t: http://aichat-test-key:aichat-test-secret-0123456789@minio:9000
-    # Остаётся запущенным: `up --wait` считает ошибкой вышедший контейнер; «healthy» = бакет готов.
+    # Stays running: `up --wait` treats an exited container as an error; "healthy" = bucket ready.
     init: true
     entrypoint: ["/bin/sh", "-c"]
     command: ["mc mb --ignore-existing t/aichat-test && mc version enable t/aichat-test && touch /tmp/ready && exec sleep infinity"]
@@ -55,7 +55,7 @@ services:
       - source: db-schema
         target: /docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
-      # -h 127.0.0.1: во время init-скриптов сервер слушает только сокет, поэтому «готов» = схема создана.
+      # -h 127.0.0.1: during the init scripts the server listens only on the socket, so "ready" = schema created.
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "aichat", "-d", "aichat"]
       interval: 2s
       timeout: 5s
@@ -94,10 +94,10 @@ services:
       PSQL_CMD: psql -h db -U aichat -v ON_ERROR_STOP=1
       PG_RESTORE_CMD: pg_restore -h db -U aichat
       PGPASSWORD: aichat
-      # Тесты сетевых ошибок и неверных ключей не ждут 2 минуты повторов restic.
+      # Tests of network errors and wrong keys do not wait 2 minutes of restic retries.
       AICHAT_REPO_CHECK_TIMEOUT: "15"
-    # Монтируется только ops/ (read-only): /work — файловая система контейнера, поэтому
-    # /work/test-password создаётся внутри контейнера (права 600 работают, на хост ничего не пишется).
+    # Only ops/ is mounted (read-only): /work is the container file system, so
+    # /work/test-password is created inside the container (mode 600 works, nothing is written to the host).
     volumes:
       - ../..:/work/ops:ro
       - ./test.env:/work/test.env:ro

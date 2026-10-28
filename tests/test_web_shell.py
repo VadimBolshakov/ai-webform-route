@@ -111,16 +111,16 @@ async def test_require_csrf():
 @pytest.mark.parametrize(
     "url",
     [
-        "http://example.com",  # http только для localhost
-        "https://example.com/app",  # без пути
+        "http://example.com",  # http only for localhost
+        "https://example.com/app",  # no path
         "https://example.com?x=1",
         "https://example.com#f",
         "ftp://example.com",
         "example.com",
         "https://",
-        "https://example.com:99999",  # порт вне диапазона
+        "https://example.com:99999",  # port out of range
         "https://example.com:abc",
-        "https://user:pw@example.com",  # без userinfo
+        "https://user:pw@example.com",  # no userinfo
         "https://user@example.com",
     ],
 )
@@ -160,7 +160,7 @@ async def test_origin_with_explicit_default_port_allowed(settings):
     application = create_app(s)
     async with AsyncClient(transport=ASGITransport(app=application), base_url=s.base_url) as c:
         r = await c.post("/healthz", headers={"Origin": "https://chat.example:443"})
-        assert r.status_code == 404  # прошло проверку Origin; 405 маскируется под 404
+        assert r.status_code == 404  # passed the Origin check; 405 is masked as 404
         r = await c.post("/healthz", headers={"Origin": "https://chat.example:444"})
         assert r.status_code == 403
     await application.state.engine.dispose()
@@ -174,7 +174,7 @@ def test_title_model_default_and_not_empty(settings, monkeypatch):
     base = {k: v for k, v in settings.model_dump().items() if k != "title_model"}
     with pytest.raises(ValidationError):
         Settings(**base, title_model="", _env_file=None)
-    monkeypatch.setenv("TITLE_MODEL", "")  # пустая строка в .env → значение по умолчанию
+    monkeypatch.setenv("TITLE_MODEL", "")  # empty string in .env -> default value
     assert Settings(**base, _env_file=None).title_model == "openai/gpt-4o-mini"
 
 

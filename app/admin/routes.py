@@ -273,7 +273,7 @@ async def add_model(
         if info is not None:
             name = str(info["name"])[:200] or model_id
             supports_images = bool(info["supports_images"])
-    except Exception as exc:  # LLMError и любые сбои разбора ответа
+    except Exception as exc:  # LLMError and any response-parsing failures
         logger.warning("get_model_info failed: %s", type(exc).__name__)
         return await _page(request, db, ctx, status=502, error=MSG_OR_DOWN)
     if info is None:
