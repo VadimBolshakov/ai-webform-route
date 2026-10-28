@@ -265,6 +265,32 @@ test_hc_ping_paths() {
     ((size > 0 && size <= 1024)) || { cat "$HC_LOG"; fail "sent $size bytes"; }
 }
 
+test_cronitor_ping_params() {
+    local url="$HC_URL/p/test-key/aichat-backup"
+    run_lib "export PING_STYLE=cronitor; hc_ping $url start; hc_ping $url/ ok; hc_ping $url fail 'pg_dump: boom & 100%'" \
+        || { cat "$OUT"; fail "cronitor hc_ping returned an error"; }
+    [[ "$(jq -r .method "$HC_LOG" | sort -u)" == GET ]] || { cat "$HC_LOG"; fail "cronitor pings must be GET"; }
+    local expected
+    # Spaces become "+" (curl --data-urlencode, as in Cronitor's own docs); empty body -> no message param.
+    expected="/p/test-key/aichat-backup?state=run /p/test-key/aichat-backup?state=complete"
+    expected+=" /p/test-key/aichat-backup?state=fail&message=pg_dump%3A+boom+%26+100%25"
+    [[ "$(hc_paths | paste -sd ' ')" == "$expected" ]] || { cat "$HC_LOG"; fail "cronitor query"; }
+    ! grep -q 'test-key' "$OUT" || { cat "$OUT"; fail "ping URL got into the journal"; }
+
+    # Long body: message is cut to 1024 bytes before encoding.
+    curl -fsS -X POST "$HC_URL/reset" >/dev/null
+    run_lib "export PING_STYLE=cronitor; hc_ping $url fail \"\$(printf 'x%.0s' {1..3000})\"" || { cat "$OUT"; fail "long body"; }
+    [[ "$(hc_paths)" == "/p/test-key/aichat-backup?state=fail&message=$(printf 'x%.0s' {1..1024})" ]] \
+        || { cat "$HC_LOG"; fail "message not truncated to 1024 bytes"; }
+}
+
+test_ping_style_unknown_skipped() {
+    run_lib "export PING_STYLE=uptimerobot; hc_ping $HC_URL start; echo rc=\$?" || { cat "$OUT"; fail "returned an error"; }
+    grep -q "unknown PING_STYLE 'uptimerobot'" "$OUT" || { cat "$OUT"; fail "no warning"; }
+    grep -q '^rc=0$' "$OUT" || fail "code is not 0"
+    [[ ! -s "$HC_LOG" ]] || { cat "$HC_LOG"; fail "there was a request to hc"; }
+}
+
 test_hc_ping_rejects_bad_url() {
     run_lib "hc_ping 'http://hc:8080/x\"y' start; hc_ping 'http://hc:8080/x\\y' ok; echo rc=\$?" \
         || { cat "$OUT"; fail "hc_ping with a bad URL returned an error"; }

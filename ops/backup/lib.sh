@@ -80,7 +80,9 @@ repo_exists() {
     return 2
 }
 
-# hc_ping <url> <start|ok|fail> [body] - healthchecks.io ping; a ping failure does not change the exit code.
+# hc_ping <url> <start|ok|fail> [body] - liveness ping; a ping failure does not change the exit code.
+# PING_STYLE=healthchecks (default): POST <url>/start, <url>, <url>/fail with the body.
+# PING_STYLE=cronitor: GET <url>?state=run|complete|fail&message=<body> (Cronitor telemetry API).
 # The URL is passed to curl via a config on a descriptor, not as an argument (not visible in ps); it is not written to the journal.
 hc_ping() {
     local url=${1:-} suffix=${2:-} body=${3-} target rc=0
@@ -94,19 +96,37 @@ hc_ping() {
         return 0
     fi
     url=${url%/}
-    case "$suffix" in
-        start) target="$url/start" ;;
-        ok) target="$url" ;;
-        fail) target="$url/fail" ;;
-        *)
+    local style=${PING_STYLE:-healthchecks} state
+    case "$style:$suffix" in
+        healthchecks:start) target="$url/start" ;;
+        healthchecks:ok) target="$url" ;;
+        healthchecks:fail) target="$url/fail" ;;
+        cronitor:start) state=run ;;
+        cronitor:ok) state=complete ;;
+        cronitor:fail) state=fail ;;
+        healthchecks:* | cronitor:*)
             log "healthchecks: unknown ping type '$suffix', ping skipped"
+            return 0
+            ;;
+        *)
+            log "healthchecks: unknown PING_STYLE '$style' (expected healthchecks or cronitor), ping skipped"
             return 0
             ;;
     esac
     local LC_ALL=C
     body=${body:0:1024}
-    printf '%s' "$body" | curl -fsS -m 10 --retry 3 -o /dev/null --data-binary @- \
-        -K <(printf 'url = "%s"\n' "$target") 2>/dev/null || rc=$?
+    if [[ "$style" == cronitor ]]; then
+        # Cronitor telemetry API: GET <url>?state=run|complete|fail&message=<url-encoded text>.
+        # The message is read from stdin (not visible in ps); the URL with the key goes via the config.
+        local msg_arg=()
+        [[ -n "$body" ]] && msg_arg=(--data-urlencode "message@-")
+        printf '%s' "$body" | curl -fsS -m 10 --retry 3 -o /dev/null --get \
+            --data-urlencode "state=$state" "${msg_arg[@]}" \
+            -K <(printf 'url = "%s"\n' "$url") 2>/dev/null || rc=$?
+    else
+        printf '%s' "$body" | curl -fsS -m 10 --retry 3 -o /dev/null --data-binary @- \
+            -K <(printf 'url = "%s"\n' "$target") 2>/dev/null || rc=$?
+    fi
     if ((rc != 0)); then
         log "healthchecks: ping '$suffix' not delivered (curl, code $rc)"
     fi

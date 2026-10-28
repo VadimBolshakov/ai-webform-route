@@ -235,6 +235,24 @@ aws iam create-access-key --user-name aichat-backup-server
 
 Пустые `HC_*_URL` не ломают бэкап, но тогда о сбоях никто не сообщит.
 
+### 3a. Вместо healthchecks.io — Cronitor
+
+Если healthchecks.io недоступен, подойдёт <https://cronitor.io> (бесплатный тариф). Скрипты умеют оба
+сервиса; какой используется, задаёт `PING_STYLE` в `restic.env` (раздел 4).
+
+1. **Monitors → Create Monitor → Job** (тип «cron job / heartbeat»):
+   - Key (имя): `aichat-backup`;
+   - Schedule: `30 3 * * *`, Timezone — пояс сервера из шага 2 выше;
+   - Grace period / tolerance: около 3 часов.
+2. Второй монитор: Key `aichat-restore-test`, Schedule `30 4 1 * *`, тот же пояс, grace 1 день.
+3. Уведомления на почту включены по умолчанию (Settings → Alerts / Notifications — проверьте адрес).
+4. Telemetry URL монитора имеет вид `https://cronitor.link/p/<telemetry key>/<key монитора>` (на странице
+   монитора, раздел «Telemetry» / «Integration», или в Settings → API Keys — ключ «Telemetry»).
+   Это `<ping-url>`: для `aichat-backup` → `HC_BACKUP_URL`, для `aichat-restore-test` → `HC_RESTORE_URL`.
+   Без `?state=…` в конце — параметры скрипт добавляет сам. Ключ в URL — секрет, не публикуйте его.
+
+Плагин/MCP-сервер Cronitor для Claude Code для этого не нужен.
+
 ## 4. Установка на сервер
 
 Сначала должен быть выполнен `docs/deploy.md` (разделы 1–6): приложение работает в `/opt/aichat`.
@@ -260,9 +278,12 @@ aws iam create-access-key --user-name aichat-backup-server
    AWS_ACCESS_KEY_ID=<Access key сервера из раздела 2>
    AWS_SECRET_ACCESS_KEY=<Secret access key сервера из раздела 2>
    AWS_DEFAULT_REGION=eu-central-1
+   PING_STYLE=<healthchecks или cronitor>
    HC_BACKUP_URL=<ping-url проверки aichat-backup>
    HC_RESTORE_URL=<ping-url проверки aichat-restore-test>
    ```
+
+   `PING_STYLE` — какой сервис из раздела 3 вы выбрали (`healthchecks` — если оставить пустым).
 
    Вставка в nano — правой кнопкой мыши (или Shift+Insert). Сохранить — Ctrl+O, Enter; выйти — Ctrl+X.
 
