@@ -64,6 +64,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if app.state.background_tasks:
             # Let messages/usage after streams and titles finish writing.
             await asyncio.wait(list(app.state.background_tasks), timeout=SHUTDOWN_GRACE_S)
+        drain = getattr(app.state.notifier, "drain", None)
+        if drain is not None:
+            await drain()
         await http.aclose()
         await engine.dispose()
 

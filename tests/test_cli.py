@@ -143,3 +143,13 @@ async def test_whoami_prints_chat_ids(capsys):
     assert "No messages. Send any message to the bot first." in capsys.readouterr().out
 
     assert await cli.telegram_whoami(Settings.model_construct(telegram_bot_token="")) == 1
+
+
+@respx.mock
+async def test_whoami_failure_exits_1_without_token(capsys):
+    from app.config import Settings
+
+    respx.post("https://api.telegram.org/bot9:tok/getUpdates").mock(return_value=httpx.Response(401))
+    assert await cli.telegram_whoami(Settings.model_construct(telegram_bot_token="9:tok")) == 1
+    err = capsys.readouterr().err
+    assert "401" in err and "9:tok" not in err

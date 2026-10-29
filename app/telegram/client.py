@@ -31,9 +31,9 @@ def split_text(text: str, limit: int = MAX_PART_CHARS) -> list[str]:
             parts.append(current)
             current = ""
         current += line
-    if current or not parts:
+    if current:
         parts.append(current)
-    return parts
+    return [p for p in parts if p.strip()]
 
 
 class TelegramClient:
@@ -43,9 +43,12 @@ class TelegramClient:
         http: httpx.AsyncClient,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        # Request URLs contain the token: make sure httpx never logs them.
+        # Request URLs contain the token: make sure httpx never logs them. Only raise the level
+        # (never lower an operator's stricter setting). tests/test_telegram_client.py relies on this.
         for name in ("httpx", "httpcore"):
-            logging.getLogger(name).setLevel(logging.WARNING)
+            lg = logging.getLogger(name)
+            if lg.level < logging.WARNING:  # NOTSET (0) counts as below
+                lg.setLevel(logging.WARNING)
         self._base = f"{API_BASE}/bot{token}/"
         self._http = http
         self._sleep = sleep

@@ -101,3 +101,43 @@ async def test_token_never_logged(client, caplog):
     assert caplog.records
     assert TOKEN not in caplog.text
     assert "SECRET" not in caplog.text
+
+
+@respx.mock
+async def test_send_splits_single_long_line(client):
+    text = "y" * 9000
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    assert await client.send_message(1, text) is True
+    parts = [json.loads(c.request.content)["text"] for c in route.calls]
+    assert [len(p) for p in parts] == [4000, 4000, 1000]
+    assert "".join(parts) == text
+
+
+@respx.mock
+async def test_blank_parts_are_skipped(client):
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    assert await client.send_message(1, "   " + chr(10) * 2) is True
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_retry_after_is_capped(client, sleeper):
+    respx.post(URL).mock(
+        side_effect=[
+            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 500}}),
+            httpx.Response(200, json={"ok": True}),
+        ]
+    )
+    assert await client.send_message(1, "x") is True
+    assert sleeper.calls == [30]
+
+
+def test_client_does_not_lower_stricter_logger_level(http):
+    lg = logging.getLogger("httpx")
+    old = lg.level
+    try:
+        lg.setLevel(logging.ERROR)
+        TelegramClient(TOKEN, http)
+        assert lg.level == logging.ERROR
+    finally:
+        lg.setLevel(old)
