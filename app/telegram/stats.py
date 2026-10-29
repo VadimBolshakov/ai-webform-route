@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.billing.service import month_start
-from app.models import AuditLog, Chat, Message, Usage, User
+from app.models import AuditLog, AuthSession, Chat, Message, Usage, User
 
 ZERO = Decimal(0)
 
@@ -235,16 +235,19 @@ async def users_text(
             )
         ).all()
     }
-    last = {
-        r.user_id: r.last_at
-        for r in (
-            await db.execute(
-                select(Usage.user_id, func.max(Usage.created_at).label("last_at"))
-                .where(Usage.user_id.is_not(None))
-                .group_by(Usage.user_id)
-            )
-        ).all()
-    }
+    # Last activity = the later of the last usage row and the last session hit (as on the admin page).
+    last: dict[int, datetime] = {}
+    for stmt in (
+        select(Usage.user_id, func.max(Usage.created_at).label("last_at"))
+        .where(Usage.user_id.is_not(None))
+        .group_by(Usage.user_id),
+        select(AuthSession.user_id, func.max(AuthSession.last_seen).label("last_at")).group_by(
+            AuthSession.user_id
+        ),
+    ):
+        for r in (await db.execute(stmt)).all():
+            if r.last_at is not None and (r.user_id not in last or r.last_at > last[r.user_id]):
+                last[r.user_id] = r.last_at
     users = (await db.execute(select(User).order_by(User.id))).scalars().all()
     if not users:
         return "Пользователей нет"

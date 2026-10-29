@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from app.auth.sessions import create_session
 from app.jobs import send_digest
 from app.models import AuditLog, Chat, Message, Usage
 from app.telegram.stats import (
@@ -185,16 +186,28 @@ async def test_digest_has_no_content(db):
 async def test_users_text(db):
     alice = await make_user(db, "alice")
     bob = await make_user(db, "bob")
+    carol = await make_user(db, "carol")
+    dave = await make_user(db, "dave")
     bob.is_active = False
     db.add_all([
         usage(alice, datetime(2026, 10, 28, 20, 30, tzinfo=UTC), "1.50"),
         usage(alice, datetime(2026, 9, 28, 20, 30, tzinfo=UTC), "4.00"),  # previous month
+        usage(dave, datetime(2026, 10, 28, 9, 0, tzinfo=UTC), "0.10"),
     ])
+    # Last activity is the later of the last usage and the last session hit (as on the admin page).
+    _, older_session = await create_session(db, alice, "1.1.1.1", "UA")
+    older_session.last_seen = datetime(2026, 10, 27, 8, 0, tzinfo=UTC)
+    _, carol_session = await create_session(db, carol, "1.1.1.1", "UA")
+    carol_session.last_seen = datetime(2026, 10, 29, 7, 15, tzinfo=UTC)
+    _, dave_session = await create_session(db, dave, "1.1.1.1", "UA")
+    dave_session.last_seen = datetime(2026, 10, 28, 10, 0, tzinfo=UTC)
     await db.flush()
     text = await users_text(db, MSK, datetime(2026, 10, 29, 12, tzinfo=UTC))
     assert text.splitlines() == [
         "alice — активен, $1.50 из $5.00, последняя активность 28.10 23:30",
         "bob — заблокирован, $0.00 из $5.00, последняя активность —",
+        "carol — активен, $0.00 из $5.00, последняя активность 29.10 10:15",
+        "dave — активен, $0.10 из $5.00, последняя активность 28.10 13:00",
     ]
 
 

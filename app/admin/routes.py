@@ -8,10 +8,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.service import AdminActionError, block_user, unblock_user
 from app.auth.deps import AuthContext, current_auth
 from app.auth.invites import create_invite
 from app.auth.service import audit
-from app.auth.sessions import revoke_all, utcnow
+from app.auth.sessions import utcnow
 from app.billing.service import month_start
 from app.db import get_db
 from app.models import AllowedModel, AuthSession, Invite, Usage, User
@@ -33,8 +34,6 @@ MSG_BAD_MODEL_ID = "Некорректный идентификатор моде
 MSG_MODEL_EXISTS = "Такая модель уже добавлена"
 MSG_MODEL_NOT_FOUND = "Модель не найдена в OpenRouter"
 MSG_OR_DOWN = "OpenRouter недоступен"
-MSG_SELF_BLOCK = "Нельзя заблокировать свою учётную запись"
-MSG_ADMIN_BLOCK = "Нельзя заблокировать администратора"
 
 STATUS_LABELS = {"active": "активен", "used": "использован", "expired": "просрочен / отозван"}
 
@@ -221,7 +220,7 @@ async def set_limit(
 
 
 @router.post("/users/{user_id}/block")
-async def block_user(
+async def block_user_route(
     user_id: int,
     request: Request,
     ctx: AuthContext = Depends(admin_auth),
@@ -229,19 +228,16 @@ async def block_user(
 ):
     await require_csrf(request, ctx.session)
     user = await _locked_user(db, user_id)
-    if user.id == ctx.user.id:
-        return await _page(request, db, ctx, status=400, error=MSG_SELF_BLOCK)
-    if user.role == "admin":
-        return await _page(request, db, ctx, status=400, error=MSG_ADMIN_BLOCK)
-    user.is_active = False
-    await revoke_all(db, user.id)
-    await audit(db, "user_blocked", ctx.user, client_ip(request), target_id=user.id)
+    try:
+        await block_user(db, ctx.user, user, client_ip(request))
+    except AdminActionError as e:
+        return await _page(request, db, ctx, status=400, error=e.message)
     await db.commit()
     return _back()
 
 
 @router.post("/users/{user_id}/unblock")
-async def unblock_user(
+async def unblock_user_route(
     user_id: int,
     request: Request,
     ctx: AuthContext = Depends(admin_auth),
@@ -249,8 +245,7 @@ async def unblock_user(
 ):
     await require_csrf(request, ctx.session)
     user = await _locked_user(db, user_id)
-    user.is_active = True
-    await audit(db, "user_unblocked", ctx.user, client_ip(request), target_id=user.id)
+    await unblock_user(db, ctx.user, user, client_ip(request))
     await db.commit()
     return _back()
 

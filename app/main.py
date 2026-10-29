@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +29,7 @@ from app.notify.base import LogNotifier
 from app.security.body_limit import BodyLimitMiddleware
 from app.security.headers import OriginCheckMiddleware, SecurityHeadersMiddleware, is_private
 from app.security.ratelimit import SlidingWindowLimiter
+from app.telegram.bot import BotDeps, run_polling
 from app.telegram.client import TelegramClient
 from app.telegram.notifier import TelegramNotifier
 
@@ -58,7 +60,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         scheduler = make_scheduler(app) if settings.enable_jobs else None
         if scheduler is not None:
             scheduler.start()
+        stop_polling = asyncio.Event()
+        if settings.enable_jobs and app.state.telegram is not None:
+            deps = BotDeps(
+                app.state.sessionmaker, app.state.notifier, settings, settings.telegram_owner_chat_id
+            )
+            app.state.telegram_polling = asyncio.create_task(
+                run_polling(app.state.telegram, deps, stop_polling)
+            )
         yield
+        polling = app.state.telegram_polling
+        if polling is not None:
+            # Stop polling before the notifier drains and the shared httpx client closes.
+            stop_polling.set()
+            polling.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await polling
         if scheduler is not None:
             scheduler.shutdown(wait=False)
         if app.state.background_tasks:
@@ -79,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sessionmaker = make_sessionmaker(engine)
     app.state.notifier = LogNotifier()
     app.state.telegram = None
+    app.state.telegram_polling = None
     if settings.telegram_configured:
         app.state.telegram = TelegramClient(settings.telegram_bot_token, http)
         app.state.notifier = TelegramNotifier(app.state.telegram, settings.telegram_owner_chat_id)
