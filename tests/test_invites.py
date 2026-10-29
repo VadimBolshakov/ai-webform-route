@@ -179,7 +179,8 @@ async def test_join_page_referrer_same_origin_and_private_headers(client, db, se
 async def test_privacy_page(client):
     r = await client.get(f"{BASE}/privacy")
     assert r.status_code == 200
-    for needle in ("OpenRouter", "3 месяцев", "доступ к серверу", "удалить аккаунт"):
+    for needle in ("OpenRouter", "3 месяцев", "доступ к серверу", "удалить аккаунт",
+                   "уведомления и сводки", "не обезличиваются"):
         assert needle in r.text
     assert (await client.get("/a/wrong/privacy")).status_code == 404
 

@@ -1,14 +1,19 @@
 import asyncio
+import json
 import logging
 import time
 
+import httpx
 import pytest
+import respx
 from pydantic import ValidationError
 
 from app.config import Settings
 from app.main import create_app
 from app.notify.base import LogNotifier
+from app.telegram.client import TelegramClient
 from app.telegram.notifier import TelegramNotifier
+from tests.test_auth import login, make_user
 
 
 class FakeClient:
@@ -182,3 +187,70 @@ async def test_failed_summary_restores_dropped_count(clock):
     c.ok = True
     await n.flush_dropped()
     assert c.sent[-1] == "Пропущено уведомлений: 3"
+
+
+SECRET_TOKEN = "123456:SECRET-token-value"
+
+
+def _notify_records(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "notify" and r.levelno == logging.WARNING]
+
+
+async def test_alert_always_logged_even_when_telegram_fails(caplog):
+    caplog.set_level(logging.DEBUG)
+    async with httpx.AsyncClient() as http:
+        with respx.mock:
+            respx.post(f"https://api.telegram.org/bot{SECRET_TOKEN}/sendMessage").mock(
+                return_value=httpx.Response(401)
+            )
+            n = TelegramNotifier(TelegramClient(SECRET_TOKEN, http), 7)
+            await n.alert("Series of failed logins: alice, IP 1.2.3.4")
+            await n.drain()
+    assert _notify_records(caplog) == ["Series of failed logins: alice, IP 1.2.3.4"]
+    assert "telegram: send failed (HTTP 401)" in caplog.text
+    assert "SECRET" not in caplog.text
+
+
+async def test_alert_logged_with_working_client(fake, caplog):
+    caplog.set_level(logging.WARNING)
+    n = TelegramNotifier(fake, 7)
+    await n.alert("hello")
+    await n.drain()
+    assert fake.sent == [(7, "hello")]
+    assert _notify_records(caplog) == ["hello"]
+
+
+async def test_dropped_alerts_still_logged(fake, clock, caplog):
+    caplog.set_level(logging.WARNING)
+    n = TelegramNotifier(fake, 7, clock=clock)
+    for i in range(22):
+        await n.alert(f"a{i}")
+        await n.drain()
+    assert len(fake.sent) == 20  # rate limit dropped two
+    client = SlowClient()
+    m = TelegramNotifier(client, 7)
+    for i in range(7):
+        await m.alert(f"b{i}")  # two dropped as in-flight
+    await m.drain()
+    assert client.started == 5
+    assert _notify_records(caplog) == [f"a{i}" for i in range(22)] + [f"b{i}" for i in range(7)]
+
+
+async def test_failed_login_series_reaches_owner_end_to_end(app, client, db, caplog):
+    caplog.set_level(logging.DEBUG)
+    await make_user(db)
+    async with httpx.AsyncClient() as http:
+        with respx.mock(assert_all_called=True) as mock:
+            route = mock.post(f"https://api.telegram.org/bot{SECRET_TOKEN}/sendMessage").mock(
+                return_value=httpx.Response(200, json={"ok": True, "result": {}})
+            )
+            notifier = TelegramNotifier(TelegramClient(SECRET_TOKEN, http), 4242)
+            app.state.notifier = notifier
+            for _ in range(5):
+                assert (await login(client, password="bad-bad-bad-bad")).status_code == 401
+            await notifier.drain()
+    assert route.call_count == 1
+    body = json.loads(route.calls[0].request.content)
+    assert body["chat_id"] == 4242
+    assert body["text"].startswith("Series of failed logins: alice")
+    assert "SECRET" not in caplog.text

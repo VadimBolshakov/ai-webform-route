@@ -116,14 +116,18 @@ async def test_whoami_prints_chat_ids(capsys):
                     {
                         "update_id": 1,
                         "message": {
-                            "chat": {"id": 555},
+                            "chat": {"id": 555, "type": "private"},
                             "from": {"id": 555, "username": "vadim", "first_name": "V"},
                             "text": "0123456789" * 4,
                         },
                     },
                     {
                         "update_id": 2,
-                        "message": {"chat": {"id": 556}, "from": {"first_name": "Anna"}, "text": "hi"},
+                        "message": {
+                            "chat": {"id": -556, "type": "group"},
+                            "from": {"first_name": "Anna"},
+                            "text": "hi",
+                        },
                     },
                 ],
             },
@@ -132,8 +136,8 @@ async def test_whoami_prints_chat_ids(capsys):
     assert await cli.telegram_whoami(s) == 0
     out = capsys.readouterr().out.splitlines()
     assert out == [
-        "chat_id=555 from=vadim text=" + "0123456789" * 3,
-        "chat_id=556 from=Anna text=hi",
+        "chat_id=555 type=private from=vadim text=" + "0123456789" * 3,
+        "chat_id=-556 type=group from=Anna text=hi",
     ]
 
     respx.post("https://api.telegram.org/bot9:tok/getUpdates").mock(
@@ -153,3 +157,48 @@ async def test_whoami_failure_exits_1_without_token(capsys):
     assert await cli.telegram_whoami(Settings.model_construct(telegram_bot_token="9:tok")) == 1
     err = capsys.readouterr().err
     assert "401" in err and "9:tok" not in err
+
+
+@respx.mock
+async def test_whoami_409_explains_conflict(capsys):
+    from app.config import Settings
+
+    respx.post("https://api.telegram.org/bot9:tok/getUpdates").mock(return_value=httpx.Response(409))
+    assert await cli.telegram_whoami(Settings.model_construct(telegram_bot_token="9:tok")) == 1
+    err = capsys.readouterr().err
+    assert err.strip() == (
+        "Conflict: the app is already polling this bot (only one getUpdates consumer is allowed). "
+        "Stop the app or unset TELEGRAM_OWNER_CHAT_ID, then retry."
+    )
+
+
+@respx.mock
+async def test_whoami_strips_control_chars_and_tolerates_missing_fields(capsys):
+    from app.config import Settings
+
+    respx.post("https://api.telegram.org/bot9:tok/getUpdates").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 1,
+                        "message": {
+                            "chat": {"id": 5, "type": "private"},
+                            "from": {"username": "ev\x1b[2Jil\u202e"},
+                            "text": "a\rb\nc\x07d",
+                        },
+                    },
+                    {"update_id": 2, "message": {"text": "x"}},
+                    {"update_id": 3, "message": {"chat": {}}},
+                ],
+            },
+        )
+    )
+    assert await cli.telegram_whoami(Settings.model_construct(telegram_bot_token="9:tok")) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chat_id=5 type=private from=ev[2Jil text=abcd",
+        "chat_id=? type=? from=? text=x",
+        "chat_id=? type=? from=? text=",
+    ]

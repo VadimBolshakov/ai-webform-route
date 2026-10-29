@@ -165,6 +165,18 @@ def test_digest_no_activity():
     )
 
 
+
+def test_digest_no_activity_still_shows_incidents():
+    s = PeriodStats(month_cost_usd=Decimal("7.12"), total_users=9, failed_logins=3)
+    assert format_digest("Сводка за 28.10.2026", s, False) == (
+        "Сводка за 28.10.2026: активности не было. С начала месяца $7.12\n"
+        "Ошибок модели: 0 · неудачных входов: 3 · новых пользователей: 0"
+    )
+    for kw in ({"model_errors": 2}, {"new_users": 1}):
+        text = format_digest("x", PeriodStats(**kw), False)
+        assert text.splitlines()[0] == "x: активности не было. С начала месяца $0.00"
+        assert text.splitlines()[1].startswith("Ошибок модели: ")
+
 async def test_digest_has_no_content(db):
     alice = await make_user(db, "alice")
     at = msk(29, 12)

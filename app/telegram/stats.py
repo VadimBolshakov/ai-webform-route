@@ -184,9 +184,19 @@ def _usd(x: Decimal) -> str:
     return f"${x:.2f}"
 
 
+def _incidents(s: PeriodStats) -> str:
+    return (
+        f"Ошибок модели: {s.model_errors} · неудачных входов: {s.failed_logins} "
+        f"· новых пользователей: {s.new_users}"
+    )
+
+
 def format_digest(title: str, s: PeriodStats, weekly: bool) -> str:
     if s.messages == 0:
-        return f"{title}: активности не было. С начала месяца {_usd(s.month_cost_usd)}"
+        text = f"{title}: активности не было. С начала месяца {_usd(s.month_cost_usd)}"
+        if s.model_errors or s.failed_logins or s.new_users:
+            text += "\n" + _incidents(s)
+        return text
     lines = [
         title,
         f"Активных пользователей: {s.active_users} из {s.total_users}",
@@ -204,10 +214,7 @@ def format_digest(title: str, s: PeriodStats, weekly: bool) -> str:
                 f"  {u.username} — {u.messages} сообщ., {_usd(u.cost)} "
                 f"(месяц {_usd(u.month_cost)} из {_usd(u.limit)})"
             )
-    lines.append(
-        f"Ошибок модели: {s.model_errors} · неудачных входов: {s.failed_logins} "
-        f"· новых пользователей: {s.new_users}"
-    )
+    lines.append(_incidents(s))
     return "\n".join(lines)
 
 

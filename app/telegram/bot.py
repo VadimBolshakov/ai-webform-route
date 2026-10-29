@@ -140,10 +140,13 @@ async def handle_update(update: dict, deps: BotDeps) -> None:
     """Serve one update. Never raises; never logs message text."""
     try:
         message = update.get("message") or {}
-        chat_id = (message.get("chat") or {}).get("id")
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
         if chat_id is None:
             return
-        if chat_id != deps.owner_chat_id:
+        # Owner-only means the owner's private chat: a group never qualifies, even if its id
+        # matches or the owner is the sender (other members would see the replies).
+        if chat_id != deps.owner_chat_id or chat.get("type") != "private":
             # WARNING: the app configures no logging, so INFO would not reach the container log.
             logger.warning("telegram: ignored update from chat %s", chat_id)
             return

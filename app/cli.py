@@ -78,6 +78,17 @@ async def reset_password(db: AsyncSession, username: str, password: str) -> User
     return user
 
 
+WHOAMI_CONFLICT = (
+    "Conflict: the app is already polling this bot (only one getUpdates consumer is allowed). "
+    "Stop the app or unset TELEGRAM_OWNER_CHAT_ID, then retry."
+)
+
+
+def _printable(value: object) -> str:
+    """Telegram texts are attacker-controlled: drop control characters (terminal escapes etc.)."""
+    return "".join(ch for ch in str(value) if ch.isprintable())
+
+
 async def telegram_whoami(settings: Settings) -> int:
     """Print chat ids of recent messages to the bot (to find TELEGRAM_OWNER_CHAT_ID)."""
     if not settings.telegram_bot_token:
@@ -88,16 +99,22 @@ async def telegram_whoami(settings: Settings) -> int:
         try:
             updates = await client.get_updates(None, 0)
         except TelegramError as e:
-            print(f"getUpdates failed: {e}", file=sys.stderr)
+            if str(e) == "HTTP 409":
+                print(WHOAMI_CONFLICT, file=sys.stderr)
+            else:
+                print(f"getUpdates failed: {e}", file=sys.stderr)
             return 1
     shown = 0
     for upd in updates:
         msg = upd.get("message")
         if not msg:
             continue
+        chat = msg.get("chat") or {}
         sender = msg.get("from") or {}
-        who = sender.get("username") or sender.get("first_name") or "?"
-        print(f"chat_id={msg['chat']['id']} from={who} text={(msg.get('text') or '')[:30]}")
+        who = _printable(sender.get("username") or sender.get("first_name") or "?")
+        text = _printable(msg.get("text") or "")[:30]
+        chat_id, chat_type = chat.get("id", "?"), _printable(chat.get("type") or "?")
+        print(f"chat_id={chat_id} type={chat_type} from={who} text={text}")
         shown += 1
     if not shown:
         print("No messages. Send any message to the bot first.")

@@ -158,6 +158,30 @@ async def test_foreign_chat_ignored(db, deps, caplog):
     assert "SECRET-TEXT" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "chat, sender",
+    [
+        ({"id": OWNER, "type": "group"}, OWNER),  # forged: group id equal to the owner id
+        ({"id": -100123, "type": "supergroup"}, OWNER),  # the owner writes in a group
+        ({"id": OWNER, "type": "channel"}, None),
+        ({"id": OWNER}, OWNER),  # no type at all
+    ],
+)
+async def test_non_private_chat_ignored(db, deps, caplog, chat, sender):
+    await make_user(db, "boss", "admin")
+    alice = await make_user(db, "alice")
+    message = {"message_id": 1, "chat": chat, "text": "/block alice"}
+    if sender is not None:
+        message["from"] = {"id": sender, "is_bot": False}
+    with caplog.at_level(logging.WARNING, logger="telegram"):
+        await handle_update({"update_id": 1, "message": message}, deps)
+    assert deps.notifier.sent == []
+    await db.refresh(alice)
+    assert alice.is_active is True
+    assert await events(db, "user_blocked") == []
+    assert f"telegram: ignored update from chat {chat['id']}" in caplog.text
+
+
 @pytest.fixture
 async def http():
     async with httpx.AsyncClient() as c:

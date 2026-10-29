@@ -6,6 +6,9 @@ from collections.abc import Callable
 from typing import Protocol
 
 logger = logging.getLogger("telegram")
+# Same logger and level as LogNotifier: every alert stays in the server log even when Telegram
+# is down, the token is revoked or the alert is dropped by the rate limit.
+alert_logger = logging.getLogger("notify")
 
 ALERTS_PER_WINDOW = 20
 WINDOW_S = 3600
@@ -55,6 +58,7 @@ class TelegramNotifier:
 
     async def alert(self, text: str) -> None:
         """Rate-limit accounting is synchronous; the send runs in a background task."""
+        alert_logger.warning(text)
         if len(self._tasks) >= MAX_IN_FLIGHT:
             self._dropped += 1
             return

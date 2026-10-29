@@ -142,7 +142,8 @@ async def test_scheduler_telegram_jobs(settings, db):
     configured = settings.model_copy(
         update={"telegram_bot_token": "t", "telegram_owner_chat_id": 1, "digest_time": "07:30"}
     )
-    sched = make_scheduler(create_app(configured))
+    app = create_app(configured)
+    sched = make_scheduler(app)
     sched.start(paused=True)
     try:
         jobs = {j.id: j for j in sched.get_jobs()}
@@ -155,3 +156,4 @@ async def test_scheduler_telegram_jobs(settings, db):
         assert fields["hour"] == "7" and fields["minute"] == "30"
     finally:
         sched.shutdown(wait=False)
+        await app.state.engine.dispose()
