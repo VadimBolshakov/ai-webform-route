@@ -1,15 +1,19 @@
 """Background jobs (APScheduler). Functions take a session/client factory - tests call them directly."""
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import delete, select
 
 from app.auth.sessions import utcnow
 from app.billing.service import month_spend, notify_thresholds
 from app.models import AuditLog, AuthSession, Invite, Usage, User
+from app.telegram.notifier import TelegramNotifier
+from app.telegram.stats import collect, format_digest, period_window
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +106,21 @@ async def backfill_costs(factory, llm, notifier) -> int:
             updated += changed
 
 
+async def send_digest(factory, notifier, settings, now: datetime | None = None) -> str | None:
+    """Daily digest for the previous local day; on Mondays the weekly one (previous Mon-Sun)."""
+    now = now or datetime.now(timezone.utc)
+    tz = ZoneInfo(settings.digest_timezone)
+    weekly = now.astimezone(tz).weekday() == 0
+    start, end, label = period_window("week" if weekly else "day", now, tz)
+    async with factory() as db:
+        stats = await collect(db, start, end)
+        await db.rollback()
+    prefix = "Сводка за неделю" if weekly else "Сводка за"
+    text = format_digest(f"{prefix} {label}", stats, weekly)
+    await notifier.send(text)
+    return text
+
+
 def make_scheduler(app) -> AsyncIOScheduler:
     factory = app.state.sessionmaker
 
@@ -117,8 +136,36 @@ def make_scheduler(app) -> AsyncIOScheduler:
         except Exception as exc:
             logger.warning("backfill_costs failed (%s)", type(exc).__name__)
 
+    async def _digest() -> None:
+        try:
+            await send_digest(factory, app.state.notifier, app.state.settings)
+        except Exception as exc:
+            logger.warning("send_digest failed (%s)", type(exc).__name__)
+
+    async def _flush_dropped() -> None:
+        notifier = app.state.notifier
+        if isinstance(notifier, TelegramNotifier):
+            try:
+                await notifier.flush_dropped()
+            except Exception as exc:
+                logger.warning("flush_dropped failed (%s)", type(exc).__name__)
+
     scheduler = AsyncIOScheduler(timezone="UTC")
     opts = {"max_instances": 1, "coalesce": True}
     scheduler.add_job(_cleanup, "interval", hours=6, id="cleanup_expired", **opts)
     scheduler.add_job(_backfill, "interval", minutes=5, id="backfill_costs", **opts)
+    if isinstance(app.state.notifier, TelegramNotifier):
+        scheduler.add_job(_flush_dropped, "interval", minutes=10, id="flush_dropped", **opts)
+    settings = app.state.settings
+    if settings.telegram_configured:
+        hour, minute = settings.digest_time.split(":")
+        scheduler.add_job(
+            _digest,
+            CronTrigger(
+                hour=int(hour), minute=int(minute), timezone=ZoneInfo(settings.digest_timezone)
+            ),
+            id="telegram_digest",
+            misfire_grace_time=3600,
+            **opts,
+        )
     return scheduler

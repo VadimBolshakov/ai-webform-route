@@ -66,7 +66,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.wait(list(app.state.background_tasks), timeout=SHUTDOWN_GRACE_S)
         drain = getattr(app.state.notifier, "drain", None)
         if drain is not None:
-            await drain()
+            try:
+                await asyncio.wait_for(drain(), 20)
+            except asyncio.TimeoutError:
+                logging.getLogger(__name__).warning("notifier drain timed out at shutdown")
         await http.aclose()
         await engine.dispose()
 

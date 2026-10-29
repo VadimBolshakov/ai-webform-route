@@ -134,3 +134,24 @@ async def test_scheduler_jobs_do_not_overlap(app):
             assert j.max_instances == 1 and j.coalesce is True
     finally:
         sched.shutdown(wait=False)
+
+
+async def test_scheduler_telegram_jobs(settings, db):
+    from app.main import create_app
+
+    configured = settings.model_copy(
+        update={"telegram_bot_token": "t", "telegram_owner_chat_id": 1, "digest_time": "07:30"}
+    )
+    sched = make_scheduler(create_app(configured))
+    sched.start(paused=True)
+    try:
+        jobs = {j.id: j for j in sched.get_jobs()}
+        assert set(jobs) == {"cleanup_expired", "backfill_costs", "flush_dropped", "telegram_digest"}
+        digest = jobs["telegram_digest"]
+        assert digest.max_instances == 1 and digest.coalesce is True
+        assert digest.misfire_grace_time == 3600
+        assert str(digest.trigger.timezone) == "Europe/Moscow"
+        fields = {f.name: str(f) for f in digest.trigger.fields}
+        assert fields["hour"] == "7" and fields["minute"] == "30"
+    finally:
+        sched.shutdown(wait=False)
