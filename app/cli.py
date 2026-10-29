@@ -4,16 +4,18 @@ import getpass
 import sys
 from decimal import Decimal
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.service import audit
 from app.auth.sessions import revoke_all
 from app.auth.usernames import validate_username
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db import make_engine, make_sessionmaker
 from app.models import User
 from app.security.passwords import hash_password, validate_password
+from app.telegram.client import TelegramClient, TelegramError
 
 
 async def create_admin(db: AsyncSession, username: str, password: str) -> User:
@@ -76,6 +78,32 @@ async def reset_password(db: AsyncSession, username: str, password: str) -> User
     return user
 
 
+async def telegram_whoami(settings: Settings) -> int:
+    """Print chat ids of recent messages to the bot (to find TELEGRAM_OWNER_CHAT_ID)."""
+    if not settings.telegram_bot_token:
+        print("TELEGRAM_BOT_TOKEN is not set.", file=sys.stderr)
+        return 1
+    async with httpx.AsyncClient() as http:
+        client = TelegramClient(settings.telegram_bot_token, http)
+        try:
+            updates = await client.get_updates(None, 0)
+        except TelegramError as e:
+            print(f"getUpdates failed: {e}", file=sys.stderr)
+            return 1
+    shown = 0
+    for upd in updates:
+        msg = upd.get("message")
+        if not msg:
+            continue
+        sender = msg.get("from") or {}
+        who = sender.get("username") or sender.get("first_name") or "?"
+        print(f"chat_id={msg['chat']['id']} from={who} text={(msg.get('text') or '')[:30]}")
+        shown += 1
+    if not shown:
+        print("No messages. Send any message to the bot first.")
+    return 0
+
+
 async def _run(fn, *args) -> None:
     engine = make_engine(get_settings().database_url)
     try:
@@ -98,7 +126,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in ("create-admin", "reset-2fa", "reset-password"):
         sub.add_parser(name).add_argument("username")
+    sub.add_parser("telegram-whoami")
     args = parser.parse_args(argv)
+    if args.cmd == "telegram-whoami":
+        return asyncio.run(telegram_whoami(get_settings()))
     try:
         if args.cmd == "reset-2fa":
             asyncio.run(_run(reset_2fa, args.username))

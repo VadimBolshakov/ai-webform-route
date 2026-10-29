@@ -2,7 +2,9 @@
 
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
+import respx
 from sqlalchemy import func, select
 
 from app import cli
@@ -98,3 +100,46 @@ def test_main_reset_2fa_no_prompt(monkeypatch):
     monkeypatch.setattr(cli, "_run", fake_run)
     assert cli.main(["reset-2fa", "root"]) == 0
     assert called == [(cli.reset_2fa, ("root",))]
+
+
+@respx.mock
+async def test_whoami_prints_chat_ids(capsys):
+    from app.config import Settings
+
+    s = Settings.model_construct(telegram_bot_token="9:tok")
+    respx.post("https://api.telegram.org/bot9:tok/getUpdates").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 1,
+                        "message": {
+                            "chat": {"id": 555},
+                            "from": {"id": 555, "username": "vadim", "first_name": "V"},
+                            "text": "0123456789" * 4,
+                        },
+                    },
+                    {
+                        "update_id": 2,
+                        "message": {"chat": {"id": 556}, "from": {"first_name": "Anna"}, "text": "hi"},
+                    },
+                ],
+            },
+        )
+    )
+    assert await cli.telegram_whoami(s) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out == [
+        "chat_id=555 from=vadim text=" + "0123456789" * 3,
+        "chat_id=556 from=Anna text=hi",
+    ]
+
+    respx.post("https://api.telegram.org/bot9:tok/getUpdates").mock(
+        return_value=httpx.Response(200, json={"ok": True, "result": []})
+    )
+    assert await cli.telegram_whoami(s) == 0
+    assert "No messages. Send any message to the bot first." in capsys.readouterr().out
+
+    assert await cli.telegram_whoami(Settings.model_construct(telegram_bot_token="")) == 1

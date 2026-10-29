@@ -1,6 +1,8 @@
+import re
 from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +29,30 @@ class Settings(BaseSettings):
     auto_allowed_models: list[str] = []
     max_upload_mb: int = 10
     enable_jobs: bool = True
+    telegram_bot_token: str = ""
+    telegram_owner_chat_id: int | None = None
+    digest_timezone: str = "Europe/Moscow"
+    digest_time: str = "09:00"
+
+    @property
+    def telegram_configured(self) -> bool:
+        return bool(self.telegram_bot_token) and self.telegram_owner_chat_id is not None
+
+    @field_validator("digest_timezone")
+    @classmethod
+    def _check_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except Exception:
+            raise ValueError("DIGEST_TIMEZONE: unknown time zone") from None
+        return value
+
+    @field_validator("digest_time")
+    @classmethod
+    def _check_digest_time(cls, value: str) -> str:
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
+            raise ValueError("DIGEST_TIME: HH:MM (24-hour) is required")
+        return value
 
     @field_validator("base_url")
     @classmethod

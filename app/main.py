@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from app.notify.base import LogNotifier
 from app.security.body_limit import BodyLimitMiddleware
 from app.security.headers import OriginCheckMiddleware, SecurityHeadersMiddleware, is_private
 from app.security.ratelimit import SlidingWindowLimiter
+from app.telegram.client import TelegramClient
+from app.telegram.notifier import TelegramNotifier
 
 WEB_DIR = Path(__file__).parent / "web"
 SHUTDOWN_GRACE_S = 10
@@ -44,6 +47,9 @@ class _AppNotifier:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    # Telegram API URLs contain the bot token: keep httpx request logging off.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     engine = make_engine(settings.database_url)
     http = httpx.AsyncClient()
 
@@ -66,6 +72,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.sessionmaker = make_sessionmaker(engine)
     app.state.notifier = LogNotifier()
+    app.state.telegram = None
+    if settings.telegram_configured:
+        app.state.telegram = TelegramClient(settings.telegram_bot_token, http)
+        app.state.notifier = TelegramNotifier(app.state.telegram, settings.telegram_owner_chat_id)
     app.state.login_limiter = SlidingWindowLimiter(20, 600)
     app.state.chat_limiter = SlidingWindowLimiter(settings.chat_rate_per_min, 60)
     app.state.llm_errors = ErrorSeries(3, 600)
