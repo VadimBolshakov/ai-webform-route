@@ -1,5 +1,7 @@
 # AI Chat (MVP)
 
+[![CI](https://github.com/VadimBolshakov/ai-webform-route/actions/workflows/ci.yml/badge.svg)](https://github.com/VadimBolshakov/ai-webform-route/actions/workflows/ci.yml)
+
 Закрытый веб-чат с ИИ-моделями (FastAPI + PostgreSQL, модели через OpenRouter). Доступ только по приглашениям; вход по секретному адресу.
 
 ## Требования
@@ -94,6 +96,8 @@ $env:TEST_DATABASE_URL="postgresql+asyncpg://aichat:aichat@127.0.0.1:5433/aichat
 ```
 
 Скрипт сам подставляет `DB_HOST_PORT=5433` и `TEST_DATABASE_URL`, если они не заданы.
+
+Те же проверки и тест бэкапа запускаются в GitHub Actions на каждый push и PR (`.github/workflows/ci.yml`).
 
 ## Сброс базы
 
